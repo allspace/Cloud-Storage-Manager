@@ -5,7 +5,7 @@ import (
 	"time"
 	//"os"
 	//"flag"
-	//"log"
+	"log"
 	
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -21,7 +21,7 @@ type HelloFs struct {
 
 type HelloFile struct {
 	nodefs.File
-	fileImpl fscommon.FileImpl
+	fileObject *fscommon.FileObject
 }
 
 
@@ -86,7 +86,7 @@ func (me *HelloFs) Open(name string, flags uint32, context *fuse.Context) (file 
 	fh, ok := me.FileSystemImpl.Open(name, flags)
 	if ok==0 {
 		fmt.Println("Open file ", name, " successfully.")
-		return &HelloFile{fileImpl: fh}, fuse.OK
+		return &HelloFile{fileObject: fh}, fuse.OK
 	}else{
 		fmt.Println("Failed to open ", name)
 		return nil, fuse.ENOENT
@@ -125,6 +125,16 @@ func (me *HelloFs) Mkdir(name string, mode uint32, context *fuse.Context) fuse.S
 	}
 }
 
+func (me *HelloFs) Chmod(name string, mode uint32, context *fuse.Context) (code fuse.Status) {
+	return fuse.OK
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//For file related functions
+///////////////////////////////////////////////////////////////////////////////
+
+
 func (me *HelloFile) SetInode(*nodefs.Inode) {
 
 }
@@ -134,21 +144,37 @@ func (me *HelloFile) GetAttr(out *fuse.Attr) fuse.Status {
 }
 
 func (me *HelloFile) Flush() fuse.Status {
-	return fuse.OK
+	rc := me.fileObject.Flush()
+	if rc==0 {
+		return fuse.OK
+	}else{
+		return fuse.EIO
+	}
 }
 
+//there should not be any real IO in this function
 func (me *HelloFile) Release() {
+	me.fileObject.Release()
 	return
 }
 
 func (me *HelloFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
-	fmt.Println("Get read request at: ", off, " length ", len(dest))
+	log.Println("Get read request at: ", off, " length ", len(dest))
 	
-	n := me.fileImpl.Read(dest, off)
+	n := me.fileObject.Read(dest, off)
 	if n < 0 {
 		return nil, fuse.EIO     
 	}
 	
-	fmt.Println("Read data for ", n)
+	log.Println("Read data for ", n)
 	return fuse.ReadResultData(dest), fuse.OK
 }
+
+func (me *HelloFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
+	n := me.fileObject.Write(data, off)
+	if n < 0 {
+		return 0, fuse.EIO     
+	}
+	return uint32(n), fuse.OK
+}
+

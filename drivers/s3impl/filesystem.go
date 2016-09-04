@@ -19,7 +19,9 @@ type S3FileSystemImpl struct {
 	svc       *s3.S3
 	
 	bucketName  string
-	dirCache	map[string]fscommon.DirItem
+	//dirCache	map[string]fscommon.DirItem
+	dirCache   *fscommon.DirCache
+	fileMgr	   *fscommon.FileInstanceMgr
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -31,7 +33,7 @@ func (me *S3FileSystemImpl) addDirCache(key string, di fscommon.DirItem) {
 	if key[len(key)-1] == '/' {
 		key = key[:len(key)-1]
 	}
-	me.dirCache[key] = di
+	me.dirCache.Add(key, &di, fscommon.CACHE_LIFE_SHORT)
 }
 
 //trim the last slash if there is
@@ -181,24 +183,46 @@ func (me *S3FileSystemImpl) ReleaseDir() (int) {
 }
 
 func (me *S3FileSystemImpl) GetAttr(path string)(*fscommon.DirItem, int) {
-	di,ok := me.dirCache[path];
+	di,ok := me.dirCache.Get(path);
 	if ok {
-		return &di, 0
+		return di, 0
 	}else{
 		//get attributes from remote
 		return me._getAttrFromRemote(path, fscommon.S_IFUNKOWN)
 	}
 }
 
-
-
-func (me *S3FileSystemImpl) Open(path string, flags uint32)(fscommon.FileImpl, int) {
-	//verify if the file exists, and if user has permission to open the file in selected mode
-	_, ok := me._getAttrFromRemote(path, fscommon.S_IFREG)
-	if ok == -1 {
-		return nil, -1
+func (me *S3FileSystemImpl) NewFileImpl(path string, flags uint32)fscommon.FileImpl {
+	fio := &S3FileIO{
+		svc			: me.svc,
+		bucketName	: me.bucketName,
 	}
-	return &S3FileImpl{ svc: me.svc, bucketName: me.bucketName, fileName: path, openFlags: flags}, 0
+	return &remoteCache{fileName: path, openFlags: flags, io: fio}
+}
+
+func (me *S3FileSystemImpl) Open(path string, flags uint32)(*fscommon.FileObject, int) {
+	//look in file instance manager first
+	//if successful, this will increase instance reference count
+	fo,ok := me.fileMgr.GetInstance(path, flags)
+	if ok==0 {
+		return fo, 0
+	}
+	
+	//verify if the file exists, and if user has permission to open the file in selected mode
+	_, ok = me._getAttrFromRemote(path, fscommon.S_IFREG)
+	switch ok {
+		case fscommon.EIO:
+			return nil,ok
+		case fscommon.ENOENT:
+			if (flags&fscommon.O_CREAT==0) {
+				return nil,ok
+			}
+		default:
+			return nil,ok
+	}
+	
+	fo,ok = me.fileMgr.Allocate(me, path, flags)
+	return fo, ok
 }
 
 func (me *S3FileSystemImpl) Chmod(name string, mode uint32)(int) {
@@ -216,23 +240,6 @@ func (me *S3FileSystemImpl) StatFs(name string)(*fscommon.FsInfo, int) {
 		Bavail  : 1024 * 1024 * 1024,
 		Bsize   : 1024 * 128,
 	}, 0
-}
-
-func (me *S3FileSystemImpl) Unlink(path string)(int) {
-	//not work for directory
-	if path[len(path)-1] == '/' {
-		return -1
-	}
-	//delete the object
-	params := &s3.DeleteObjectInput{
-		Bucket	: aws.String(me.bucketName),
-		Key		: aws.String(path),
-	}
-	_,err := me.svc.DeleteObject(params)
-	if err != nil {
-		return -1
-	}
-	return 0
 }
 
 func (me *S3FileSystemImpl) Mkdir(path string, mode uint32)(int) {
@@ -260,3 +267,31 @@ func (me *S3FileSystemImpl) Mkdir(path string, mode uint32)(int) {
 	return 0
 }
 
+func (me *S3FileSystemImpl) Unlink(path string)(int) {
+	//check if it's a file. we only deal with file here
+	if path[len(path)-1] == '/' {
+		return -1
+	}
+	
+	//if the file is being open, return status busy
+	if me.fileMgr.Exist(path) {
+		return fscommon.EBUSY
+	}
+	
+	//delete the file
+	params := &s3.DeleteObjectInput{
+		Bucket:       aws.String(me.bucketName), // Required
+		Key:          aws.String(path),  // Required
+	}
+	_, err := me.svc.DeleteObject(params)
+	
+	//remove dir cache if there is
+	//remove it even previous step gets failed. just to force a refresh when access it next time
+	me.dirCache.Remove(path)
+	
+	if err != nil {
+		return -1
+	}
+	
+	return 0
+}

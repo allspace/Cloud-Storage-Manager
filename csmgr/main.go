@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	//"fmt"
 	"os"
 	"os/signal"
 	"flag"
@@ -22,6 +22,8 @@ func main() {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
 	}
 
+	log.SetFlags(log.LstdFlags|log.Lshortfile)
+	
 	fs, _ := NewFileSystem("s3")
 	
 	nfs := pathfs.NewPathNodeFs(
@@ -50,7 +52,7 @@ func handleSignal(ms *fuse.Server){
 
 	// Block until a signal is received.
 	s := <-c
-	fmt.Println("Got signal:", s)
+	log.Println("Got signal:", s)
 	
 	//umount the mount point
 	ms.Unmount()

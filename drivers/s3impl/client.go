@@ -50,7 +50,8 @@ func (me *S3ClientImpl) Mount(bucketName string)(*S3FileSystemImpl, int) {
 	vol := &S3FileSystemImpl{
 			svc			: me.s3,
 			bucketName	: bucketName,
-			dirCache	: make(map[string]fscommon.DirItem),
+			dirCache	: fscommon.NewDirCache(),
+			fileMgr		: fscommon.NewFileInstanceMgr(),
 		}
 	return vol, 0
 }
