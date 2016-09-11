@@ -3,6 +3,7 @@ import (
 	"log"
 	"runtime"
 	"sync"
+	"time"
 )
 
 type FileInstance struct {
@@ -146,8 +147,9 @@ func (me *FileInstance) ReleaseWLock(fo *FileObject) {
 //one-to-one relationship with user space file handle
 //multiple file objects to one file implimentation
 ///////////////////////////////////////////////////////////////////////////////
-
+ 
 func (me *FileObject) Release() {
+	me.fileInst.file.Close()
 	me.fileInst.ReleaseWLock(me)		//maybe we should release lock in function flush which is called by close
 	me.fileMgr.Release(me.fileName)
 	me.fileInst = nil
@@ -162,6 +164,7 @@ func (me *FileObject) Read(data []byte, offset int64)(int) {
 
 func (me *FileObject) Write(data []byte, offset int64)(int) {
 	if me.fileInst == nil {
+		log.Println("There must be something wrong with file open.")
 		return -1
 	}
 	
@@ -171,12 +174,21 @@ func (me *FileObject) Write(data []byte, offset int64)(int) {
 	rc := me.fileInst.TryGetWLock(me)
 	if rc==false {
 		log.Println("Failed to get write lock.")
-		return -1 //permission denined
+		return EPERM //permission denined
 	}
 	
 	return me.fileInst.file.Write(data, offset)
 }
 
 func (me *FileObject) Flush()(int) {
+	if me.fileInst == nil || me.fileInst.file == nil{
+		log.Println("There must be something wrong with file open.")
+		return -1
+	}
+	
 	return me.fileInst.file.Flush()
+}
+
+func (me *FileObject) Utimens(Mtime *time.Time)(int) {
+	return 0
 }

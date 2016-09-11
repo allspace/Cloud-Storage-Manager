@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 	//"strings"
+	"log"
 	
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -193,20 +194,38 @@ func (me *S3FileSystemImpl) GetAttr(path string)(*fscommon.DirItem, int) {
 }
 
 func (me *S3FileSystemImpl) NewFileImpl(path string, flags uint32)fscommon.FileImpl {
+	di, ok := me.GetAttr(path)
+	if ok != 0 && ((flags&fscommon.O_CREAT)==0) {
+		return nil
+	}
+	var size int64
+	if ok != 0 {
+		size = 0
+	}else{
+		size = int64(di.Size)
+	}
+	
 	fio := &S3FileIO{
 		svc			: me.svc,
+		fs          : me,
 		bucketName	: me.bucketName,
 	}
-	return &remoteCache{fileName: path, openFlags: flags, io: fio}
+	
+	return newRemoteCache(path, size, fio)
+	//return &remoteCache{fileName: path, openFlags: flags, io: fio}
 }
 
 func (me *S3FileSystemImpl) Open(path string, flags uint32)(*fscommon.FileObject, int) {
 	//look in file instance manager first
 	//if successful, this will increase instance reference count
+	log.Println("Try to find existing object for file", path)
+	
 	fo,ok := me.fileMgr.GetInstance(path, flags)
 	if ok==0 {
 		return fo, 0
 	}
+	log.Println("Verify existing for file", path)
+	var fileNotExist bool = false
 	
 	//verify if the file exists, and if user has permission to open the file in selected mode
 	_, ok = me._getAttrFromRemote(path, fscommon.S_IFREG)
@@ -214,14 +233,24 @@ func (me *S3FileSystemImpl) Open(path string, flags uint32)(*fscommon.FileObject
 		case fscommon.EIO:
 			return nil,ok
 		case fscommon.ENOENT:
-			if (flags&fscommon.O_CREAT==0) {
+			if ((flags&fscommon.O_CREAT)==0) {
+				log.Printf("File %s does not exist, but open it without O_CREAT flag\n", path)
 				return nil,ok
 			}
-		default:
-			return nil,ok
+			fileNotExist = true
+			break
 	}
 	
+	log.Println("Trying to allocate a file instance for file ", path)
 	fo,ok = me.fileMgr.Allocate(me, path, flags)
+	if ok==0 && fileNotExist==true {
+		me.dirCache.Add(path,&fscommon.DirItem{
+			Name : path,
+			Size : 0,
+			Type : fscommon.S_IFREG,
+			Mtime: time.Now(),
+		}, fscommon.CACHE_LIFE_LONG)
+	}
 	return fo, ok
 }
 
@@ -262,7 +291,8 @@ func (me *S3FileSystemImpl) Mkdir(path string, mode uint32)(int) {
 	}
 	_,err := me.svc.PutObject(params)
 	if err != nil {
-		return -1
+		log.Println(err.Error())
+		return fscommon.EIO
 	}
 	return 0
 }
@@ -270,7 +300,7 @@ func (me *S3FileSystemImpl) Mkdir(path string, mode uint32)(int) {
 func (me *S3FileSystemImpl) Unlink(path string)(int) {
 	//check if it's a file. we only deal with file here
 	if path[len(path)-1] == '/' {
-		return -1
+		return fscommon.EINVAL
 	}
 	
 	//if the file is being open, return status busy
@@ -290,7 +320,8 @@ func (me *S3FileSystemImpl) Unlink(path string)(int) {
 	me.dirCache.Remove(path)
 	
 	if err != nil {
-		return -1
+		log.Println(err.Error())
+		return fscommon.EIO
 	}
 	
 	return 0

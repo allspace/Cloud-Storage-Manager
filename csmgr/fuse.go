@@ -85,12 +85,16 @@ func (me *HelloFs) Open(name string, flags uint32, context *fuse.Context) (file 
 	
 	fh, ok := me.FileSystemImpl.Open(name, flags)
 	if ok==0 {
-		fmt.Println("Open file ", name, " successfully.")
+		log.Println("Open file ", name, " successfully.")
 		return &HelloFile{fileObject: fh}, fuse.OK
 	}else{
-		fmt.Println("Failed to open ", name)
+		log.Println("Failed to open ", name)
 		return nil, fuse.ENOENT
 	}
+}
+
+func (me *HelloFs) Create(name string, flags uint32, mode uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
+	return me.Open(name, flags, context)
 }
 
 func (me *HelloFs) StatFs(name string) *fuse.StatfsOut {
@@ -143,6 +147,10 @@ func (me *HelloFile) GetAttr(out *fuse.Attr) fuse.Status {
 	return fuse.EBADF
 }
 
+func (me *HelloFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
+	return fuse.OK
+}
+
 func (me *HelloFile) Flush() fuse.Status {
 	rc := me.fileObject.Flush()
 	if rc==0 {
@@ -160,6 +168,7 @@ func (me *HelloFile) Release() {
 
 func (me *HelloFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 	log.Println("Get read request at: ", off, " length ", len(dest))
+	log.Println(me.fileObject)
 	
 	n := me.fileObject.Read(dest, off)
 	if n < 0 {
@@ -177,4 +186,9 @@ func (me *HelloFile) Write(data []byte, off int64) (written uint32, code fuse.St
 	}
 	return uint32(n), fuse.OK
 }
+
+
+///////////////////////////////////////////////////////////////////////////////
+
+
 

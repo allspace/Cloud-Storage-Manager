@@ -2,6 +2,7 @@ package main
 
 import(	
 	"os"
+	"log"
 	
 	"brightlib.com/common"
 	"brightlib.com/drivers/s3impl"
@@ -17,7 +18,8 @@ func NewFileSystem(name string)(fscommon.FileSystemImpl, int) {
 	key      := os.Getenv("AWS_ACCESS_KEY")
 	bucket   := os.Getenv("AWS_S3_BUCKET")
 	region   := os.Getenv("AWS_REGION")
-	//fmt.Println(endPoint)
+	
+	log.Println(endPoint)
 	
 	if len(endPoint)>0 {
 		client.Set("EndPoint", endPoint)

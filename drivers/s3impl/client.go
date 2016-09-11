@@ -1,6 +1,8 @@
 package s3impl
 
 import (
+	"log"
+	
 	"github.com/aws/aws-sdk-go/aws"
 	//"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -34,7 +36,9 @@ func (me *S3ClientImpl) Connect(region string, keyId string, skey string)(int) {
 	if endPoint,ok := me.cfg["EndPoint"]; ok {
 		config.WithEndpoint(endPoint)
 	}
-	config.WithLogLevel(aws.LogDebug)
+	log.Println(region)
+	
+	//config.WithLogLevel(aws.LogDebug)
 	
 	me.sess = session.New(config)
 	me.s3 = s3.New(me.sess)

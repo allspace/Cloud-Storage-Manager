@@ -13,11 +13,11 @@ const (
 
 const (
 	OK		= 0
-	EPERM	= 1
-	ENOENT	= 2
-	EBUSY   = 3
-	EIO     = 4
-	EINVAL  = 5
+	EPERM	= -1
+	ENOENT	= -2
+	EBUSY   = -3
+	EIO     = -4
+	EINVAL  = -5
 )
 
 const (
@@ -48,6 +48,8 @@ type FileImpl interface {
 	Read(dest []byte, off int64)(int) 
 	Write(data []byte, off int64)(int) 
 	Flush()(int)
+	Close()(int)
+	Utimens(Mtime *time.Time)(int) 
 }
 
 
