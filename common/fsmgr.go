@@ -15,9 +15,13 @@ const (
 	OK		= 0
 	EPERM	= -1
 	ENOENT	= -2
-	EBUSY   = -3
-	EIO     = -4
-	EINVAL  = -5
+	EIO     = -5
+	EBUSY   = -16
+	EEXIST  = -17
+	ENOTDIR = -20
+	EISDIR  = -21
+	EINVAL  = -22
+	ENOSYS  = -38
 )
 
 const (
@@ -48,13 +52,18 @@ type FileImpl interface {
 	Read(dest []byte, off int64)(int) 
 	Write(data []byte, off int64)(int) 
 	Flush()(int)
-	Close()(int)
+	Open(path string, flags uint32)(int)
 	Utimens(Mtime *time.Time)(int) 
+	Truncate(size uint64) int
+	
+	//no I/O should be involved in these functions
+	//they are run in big lock context
+	Release()(int)
 }
 
 
 type FileSystemImpl interface {
-	NewFileImpl(path string, flags uint32)FileImpl
+	NewFileImpl(path string)(FileImpl, int)
 		
 	ReadDir(path string) ([]DirItem , int)
 	GetAttr(path string)(*DirItem, int)

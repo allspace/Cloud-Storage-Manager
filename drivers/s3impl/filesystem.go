@@ -145,6 +145,10 @@ func (me *S3FileSystemImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 		if key == prefix {
 			continue
 		}
+		//hide slice group
+		if key[len(key)-1] == '>' {
+			continue
+		}
 		
 		dis[i].Name = me.getLastPathComp(key)	//need remove slash suffix and common prefix (for subdir)
 		dis[i].Type = fscommon.S_IFDIR
@@ -193,17 +197,8 @@ func (me *S3FileSystemImpl) GetAttr(path string)(*fscommon.DirItem, int) {
 	}
 }
 
-func (me *S3FileSystemImpl) NewFileImpl(path string, flags uint32)fscommon.FileImpl {
-	di, ok := me.GetAttr(path)
-	if ok != 0 && ((flags&fscommon.O_CREAT)==0) {
-		return nil
-	}
-	var size int64
-	if ok != 0 {
-		size = 0
-	}else{
-		size = int64(di.Size)
-	}
+//this function runs in big lock context
+func (me *S3FileSystemImpl) NewFileImpl(path string)(fscommon.FileImpl, int) {
 	
 	fio := &S3FileIO{
 		svc			: me.svc,
@@ -211,7 +206,8 @@ func (me *S3FileSystemImpl) NewFileImpl(path string, flags uint32)fscommon.FileI
 		bucketName	: me.bucketName,
 	}
 	
-	return newRemoteCache(path, size, fio)
+	rc := newRemoteCache(path, fio, me)
+	return rc,0
 	//return &remoteCache{fileName: path, openFlags: flags, io: fio}
 }
 
@@ -220,12 +216,12 @@ func (me *S3FileSystemImpl) Open(path string, flags uint32)(*fscommon.FileObject
 	//if successful, this will increase instance reference count
 	log.Println("Try to find existing object for file", path)
 	
-	fo,ok := me.fileMgr.GetInstance(path, flags)
+	fo,ok := me.fileMgr.GetInstance(path)
 	if ok==0 {
 		return fo, 0
 	}
 	log.Println("Verify existing for file", path)
-	var fileNotExist bool = false
+	//var fileNotExist bool = false
 	
 	//verify if the file exists, and if user has permission to open the file in selected mode
 	_, ok = me._getAttrFromRemote(path, fscommon.S_IFREG)
@@ -237,21 +233,31 @@ func (me *S3FileSystemImpl) Open(path string, flags uint32)(*fscommon.FileObject
 				log.Printf("File %s does not exist, but open it without O_CREAT flag\n", path)
 				return nil,ok
 			}
-			fileNotExist = true
+			//fileNotExist = true
 			break
 	}
 	
 	log.Println("Trying to allocate a file instance for file ", path)
-	fo,ok = me.fileMgr.Allocate(me, path, flags)
-	if ok==0 && fileNotExist==true {
+	fo,ok = me.fileMgr.Allocate(me, path)
+	if ok != 0 {
+		return nil, ok
+	}
+/* 	if ok==0 && fileNotExist==true {
 		me.dirCache.Add(path,&fscommon.DirItem{
 			Name : path,
 			Size : 0,
 			Type : fscommon.S_IFREG,
 			Mtime: time.Now(),
 		}, fscommon.CACHE_LIFE_LONG)
+	} */
+
+	//call this function here to avoid running it in big lock context
+	ok = fo.Open(path, flags)
+	if ok == 0 {
+		return fo, ok
+	} else {
+		return nil, ok
 	}
-	return fo, ok
 }
 
 func (me *S3FileSystemImpl) Chmod(name string, mode uint32)(int) {

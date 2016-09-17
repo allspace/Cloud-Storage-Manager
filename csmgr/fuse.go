@@ -151,6 +151,15 @@ func (me *HelloFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
 	return fuse.OK
 }
 
+func (me *HelloFile) Truncate(size uint64) fuse.Status {
+	rc := me.fileObject.Truncate(size)
+	if rc==0 {
+		return fuse.OK
+	}else{
+		return fuse.EIO
+	}
+}
+
 func (me *HelloFile) Flush() fuse.Status {
 	rc := me.fileObject.Flush()
 	if rc==0 {

@@ -33,7 +33,7 @@ func NewFileInstanceMgr() *FileInstanceMgr {
 	}
 }
 
-func (me *FileInstanceMgr) GetInstance(name string, flags uint32)(*FileObject,int) {
+func (me *FileInstanceMgr) GetInstance(name string)(*FileObject,int) {
 	me.mtx.Lock()
 	defer me.mtx.Unlock()
 	
@@ -45,14 +45,13 @@ func (me *FileInstanceMgr) GetInstance(name string, flags uint32)(*FileObject,in
 			fileMgr		: me,
 			fileInst	: fi,
 			fileName	: name,
-			openFlags   : flags,
 		},0
 	}
 	
 	return nil, ENOENT
 }
 
-func (me *FileInstanceMgr) Allocate(fs FileSystemImpl, name string, flags uint32)(*FileObject,int) {
+func (me *FileInstanceMgr) Allocate(fs FileSystemImpl, name string)(*FileObject,int) {
 	me.mtx.Lock()
 	defer me.mtx.Unlock()
 	
@@ -64,7 +63,6 @@ func (me *FileInstanceMgr) Allocate(fs FileSystemImpl, name string, flags uint32
 			fileMgr		: me,
 			fileInst	: fi,
 			fileName	: name,
-			openFlags   : flags,
 		},0
 	}
 	
@@ -73,13 +71,16 @@ func (me *FileInstanceMgr) Allocate(fs FileSystemImpl, name string, flags uint32
 		refCount	: 1,
 	}
 	me.fileInstList[name] = fi
-	fi.file = fs.NewFileImpl(name, flags)
+	file,rc := fs.NewFileImpl(name)
+	if rc < 0 {
+		return nil, rc
+	}
+	fi.file = file
 	
 	return &FileObject{
 		fileMgr		: me,
 		fileInst	: fi,
 		fileName	: name,
-		openFlags   : flags,
 	},0
 }
 
@@ -96,6 +97,7 @@ func (me *FileInstanceMgr) Release(name string)int {
 	var needGC bool = false
 	fi.refCount--
 	if fi.refCount==0 {
+		fi.file.Release()	//no IO should be involved in this release function
 		delete(me.fileInstList, name)
 		needGC = true
 	}
@@ -147,9 +149,24 @@ func (me *FileInstance) ReleaseWLock(fo *FileObject) {
 //one-to-one relationship with user space file handle
 //multiple file objects to one file implimentation
 ///////////////////////////////////////////////////////////////////////////////
- 
+func (me *FileObject) Open(path string, flags uint32)int {
+	if me.fileInst == nil {
+		return -1
+	}
+	ok := me.fileInst.file.Open(path, flags)
+	if ok != 0 {
+		me.fileMgr.Release(path)
+		me.fileInst = nil
+		return ok
+	}
+	
+	me.fileName = path
+	me.openFlags = flags
+	return 0
+}
+
 func (me *FileObject) Release() {
-	me.fileInst.file.Close()
+	me.fileInst.file.Flush()
 	me.fileInst.ReleaseWLock(me)		//maybe we should release lock in function flush which is called by close
 	me.fileMgr.Release(me.fileName)
 	me.fileInst = nil
@@ -191,4 +208,11 @@ func (me *FileObject) Flush()(int) {
 
 func (me *FileObject) Utimens(Mtime *time.Time)(int) {
 	return 0
+}
+
+func (me *FileObject) Truncate(size uint64)int {
+	if me.fileInst == nil {
+		return -1
+	}
+	return me.fileInst.file.Truncate(size)
 }

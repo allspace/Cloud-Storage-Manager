@@ -81,6 +81,37 @@ func (me *S3FileIO) copyPart(tgtName string, srcName string, byteRange string, u
 	return &s3.CompletedPart{PartNumber : &pnum, ETag : rsp.CopyPartResult.ETag}, 0
 }
 
+func (me *S3FileIO) copyBigPart(tgt string, src string, srcLen int64, uploadId string, pnum int64)([]*s3.CompletedPart, int64) {
+	plist := make([]*s3.CompletedPart, (srcLen/S3_MAX_BLOCK_SIZE) + 10)
+	remainLen := srcLen
+	var start, end int64 = 0, 0
+	for remainLen > 0 {
+		if remainLen >= 2*S3_MAX_BLOCK_SIZE {
+			start = end
+			end   = start + S3_MAX_BLOCK_SIZE
+			remainLen -= S3_MAX_BLOCK_SIZE
+		}else if remainLen >= S3_MAX_BLOCK_SIZE && remainLen < 2 * S3_MAX_BLOCK_SIZE {
+			start = end
+			end   = start + (remainLen/2)
+			remainLen -= (remainLen/2)
+		}else{
+			start = end
+			end   = start + remainLen
+			remainLen = 0
+		}
+		byteRange := fmt.Sprintf("bytes=%d-%d", start, end)
+		cp,ok := me.copyPart(tgt, src, byteRange, uploadId, pnum)
+		if ok < 0 {
+			me.cleanMultipartUpload(tgt, uploadId)
+			return nil, int64(ok)
+		}
+		plist = append(plist, cp)
+		pnum++
+	}
+	
+	return plist, pnum
+}
+
 func (me *S3FileIO) uploadPart(tgtName string, data []byte, uploadId string, pnum int64) (*s3.CompletedPart,int) {
 	params := &s3.UploadPartInput{
 		Bucket:               aws.String(me.bucketName),    // Required
@@ -99,12 +130,49 @@ func (me *S3FileIO) uploadPart(tgtName string, data []byte, uploadId string, pnu
 	return &s3.CompletedPart{PartNumber : &pnum, ETag : rsp.ETag}, 0
 }
 
+func (me *S3FileIO) copyFile(tgt string, src string)int {
+	params := &s3.CopyObjectInput{
+		Bucket:                         aws.String(me.bucketName), // Required
+		CopySource:                     aws.String(src), // Required
+		Key:                            aws.String(tgt),  // Required
+	}
+	
+	_, err := me.svc.CopyObject(params)
+	if err != nil {
+		log.Println(err.Error())
+		return fscommon.EIO
+	}
+	
+	return 0
+}
 
-func (me *S3FileIO) putBlock(name string, data []byte) int {
+func (me *S3FileIO) copyFileByRange(tgt string, src string, byteRange string) int {
+	uploadId,ok := me.startUpload(tgt)
+	if ok != 0 {
+		return ok
+	}
+	
+	cp, ok := me.copyPart(tgt, src, byteRange, uploadId, 1)
+	if ok != 0 {
+		return ok
+	}
+	
+	plist := make([]*s3.CompletedPart, 1)
+	plist = append(plist, cp)
+	ok = me.completeUpload(tgt, uploadId, plist)
+	return ok
+}
+
+func (me *S3FileIO) putFile(name string, data []byte) int {
+/* 	md := map[string]*string{
+        "x-csm-file-slice-size": 	aws.String(string(FILE_SLICE_SIZE)), 
+		"x-csm-slice-file"	   :    aws.String("1"),
+    } */
 	params := &s3.PutObjectInput{
 		Bucket:             aws.String(me.bucketName),  // Required
 		Key:                aws.String(name),  			// Required
 		Body:               bytes.NewReader(data),
+		//Metadata:			md,
 	}
 	
 	_, err := me.svc.PutObject(params)
@@ -114,6 +182,10 @@ func (me *S3FileIO) putBlock(name string, data []byte) int {
 	}
 	
 	return len(data)
+}
+
+func (me *S3FileIO) zeroFile(name string) int {
+	return me.putFile(name, make([]byte, 0))
 }
 
 func (me *S3FileIO) getBuffer(name string, dest []byte, offset int64) int {
@@ -132,6 +204,8 @@ func (me *S3FileIO) getBuffer(name string, dest []byte, offset int64) int {
 			//by now, I can only see that AWS S3 return this code when file size is zero
 			if awsErr.Code() == "InvalidRange" {
 				return 0
+			}else if awsErr.Code() == "NoSuchKey" {
+				return fscommon.ENOENT
 			}
 		}
 		log.Println(err.Error())
@@ -161,7 +235,12 @@ func (me *S3FileIO) GetRemoteFileSize(path string)(int64) {
 		log.Println(err.Error())
 		return fscommon.ENOENT		//fail to get attributes
 	}
-
+	
+	//sliceSize := rsp.Metadata["x-csm-file-slice-size"]
+	//sliceCount := rsp.Metadata["x-csm-file-slice-count"]
+	//isSliced  := rsp.Metadata["x-csm-slice-file"]
+	//fileRealSize := rsp.Metadata["x-csm-file-size"]
+	
 	return int64(*rsp.ContentLength)
 }
 
@@ -224,4 +303,55 @@ func (me *S3FileIO) Unlink(name string)(int) {
 	return me.fs.Unlink(name)
 }
 
+func (me *S3FileIO) ListDir(path string) ([]fscommon.DirItem , int) {
+	
+	prefix := path
+	if len(prefix) != 0 && prefix != "/" {
+		prefix = prefix + "/"
+	}
+	
+	params := &s3.ListObjectsV2Input{
+		Bucket:            aws.String(me.bucketName), // Required
+		//ContinuationToken: aws.String("Token"),
+		Delimiter:         aws.String("/"),
+		//EncodingType:      aws.String("EncodingType"),
+		//FetchOwner:        aws.Bool(true),
+		//MaxKeys:           aws.Int64(1),
+		Prefix:            aws.String(prefix),
+		//StartAfter:        aws.String("StartAfter"),
+	}
+	rsp, err := me.svc.ListObjectsV2(params)
 
+	if err != nil { 	// resp is not filled
+		log.Println(err)
+		return nil, -1
+	}
+	
+	diCount := len(rsp.Contents)
+	
+	dis := make([]fscommon.DirItem,  diCount)
+	
+	//collect files
+	j := 0	
+	for i := 0; i<len(rsp.Contents); i++ {
+		key := *(rsp.Contents[i].Key)
+		if key == prefix {
+			continue
+		}
+		
+		dis[j] = fscommon.DirItem{
+					Name : key,		//need remove common prefix
+					Size : uint64(*(rsp.Contents[i].Size)),
+					Mtime: *rsp.Contents[i].LastModified,
+					//rsp.Contents[i].ETag 
+					Type : fscommon.S_IFREG,
+				}
+		j++
+	}
+
+	return dis, diCount
+}
+
+func (me *S3FileIO) cleanMultipartUpload(path string, uploadId string)int {
+	return 0
+}
