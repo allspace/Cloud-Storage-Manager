@@ -61,14 +61,20 @@ func (me *S3FileIO) completeUpload(name string, uploadId string, plist []*s3.Com
 }
 
 func (me *S3FileIO) copyPart(tgtName string, srcName string, byteRange string, uploadId string, pnum int64) (*s3.CompletedPart,int) {
+	var copySrc string
+	if srcName[0] == '/' {
+		copySrc = "/" + me.bucketName + srcName
+	}else{
+		copySrc = "/" + me.bucketName + "/" + srcName
+	}
 	params := &s3.UploadPartCopyInput{
 		Bucket:               aws.String(me.bucketName),        // Required
-		CopySource:			  aws.String(srcName),
+		CopySource:			  aws.String(copySrc),
 		Key:                  aws.String(tgtName),         		// Required
 		PartNumber:           aws.Int64(pnum),                    // Required
 		UploadId:             aws.String(uploadId), 			// Required
 	}
-	log.Println(byteRange)
+	log.Println(copySrc)
 	if len(byteRange)>0 {
 		params.CopySourceRange = aws.String(byteRange)
 	}
@@ -78,6 +84,9 @@ func (me *S3FileIO) copyPart(tgtName string, srcName string, byteRange string, u
 		log.Println(err.Error())
 		return nil,fscommon.EIO
 	}
+	
+	log.Println(rsp.CopyPartResult.ETag)
+	
 	return &s3.CompletedPart{PartNumber : &pnum, ETag : rsp.CopyPartResult.ETag}, 0
 }
 

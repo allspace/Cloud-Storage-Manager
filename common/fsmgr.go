@@ -49,6 +49,7 @@ type FsInfo struct {
 }
 
 type FileImpl interface {
+	GetInfo()(*DirItem) 
 	Read(dest []byte, off int64)(int) 
 	Write(data []byte, off int64)(int) 
 	Flush()(int)

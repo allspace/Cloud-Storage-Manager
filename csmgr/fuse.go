@@ -193,6 +193,7 @@ func (me *HelloFile) Write(data []byte, off int64) (written uint32, code fuse.St
 	if n < 0 {
 		return 0, fuse.EIO     
 	}
+	log.Printf("Succesfully write data for offset %d length %d\n", off, n)
 	return uint32(n), fuse.OK
 }
 

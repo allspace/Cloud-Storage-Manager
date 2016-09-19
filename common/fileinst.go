@@ -33,6 +33,19 @@ func NewFileInstanceMgr() *FileInstanceMgr {
 	}
 }
 
+func (me *FileInstanceMgr) GetFileInfo(name string)(*DirItem,bool) {
+	me.mtx.Lock()
+	defer me.mtx.Unlock()
+	
+	//find an existing instance
+	fi,ok := me.fileInstList[name]
+	if ok==false {
+		return nil, false
+	}
+	
+	return fi.file.GetInfo(), true
+}
+
 func (me *FileInstanceMgr) GetInstance(name string)(*FileObject,int) {
 	me.mtx.Lock()
 	defer me.mtx.Unlock()
@@ -203,7 +216,8 @@ func (me *FileObject) Flush()(int) {
 		return -1
 	}
 	
-	return me.fileInst.file.Flush()
+	//flush is not supported
+	return 0
 }
 
 func (me *FileObject) Utimens(Mtime *time.Time)(int) {

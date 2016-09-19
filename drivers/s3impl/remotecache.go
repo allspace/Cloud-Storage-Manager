@@ -1,13 +1,13 @@
 package s3impl
 import (
-	"fmt"
+	//"fmt"
 	"log"
 	"time"
 	"sync"
 	"container/list"
 	
-	"github.com/aws/aws-sdk-go/service/s3"
-	//"brightlib.com/common"
+	//"github.com/aws/aws-sdk-go/service/s3"
+	"brightlib.com/common"
 )
 
 const(
@@ -33,7 +33,8 @@ type cacheBuffer struct {
 	buffer 		[]byte
 	bufferLen 	int
 	offset 		int64
-	dataLen 	int
+	fullOffset  int64
+	maxOffset   int64
 }
 
 type dataBlock cacheBuffer
@@ -50,8 +51,6 @@ type taskCmd struct {
 type remoteCache struct {
 	appendBuffer *cacheBuffer
 	totalAppendSize  int64
-	appendBlockNumStart	 int64
-	appendBlockNumEnd	 int64
 	appendBlocks		 []int64
 	appendBlockStartOffset int64
 	appendBlockCount     int
@@ -67,6 +66,8 @@ type remoteCache struct {
 	fileLen 		int64
 	filePersisentLen int64
 	mtxOpen sync.Mutex
+	mtxWrite sync.Mutex
+	distWriteList map[int64]int
 	
 	//for block maintain task
 	mtTaskStarted 	bool
@@ -86,10 +87,9 @@ func newRemoteCache(name string, io *S3FileIO, fs *S3FileSystemImpl) *remoteCach
 		fileLen: 0,
 		
 		appendBuffer    : newCacheBuffer(),
-		appendBlockNumStart : 0,
-		appendBlockNumEnd   : 0,
 		appendBlocks        : make([]int64, 1024),
 		appendBlockStartOffset : 0,
+		distWriteList       : make(map[int64]int),
 		
 		mtTaskStarted   : false,
 		mtChan          : make(chan taskCmd),
@@ -97,12 +97,13 @@ func newRemoteCache(name string, io *S3FileIO, fs *S3FileSystemImpl) *remoteCach
 }
 
 func newCacheBuffer() *cacheBuffer {
-	bsize := FILE_BLOCK_SIZE
+	bsize := FILE_BLOCK_SIZE + 1024 * 1024		//6 MB
 	return &cacheBuffer{
 		buffer 		: make([]byte, bsize),
 		bufferLen 	: bsize,
 		offset		: 0,
-		dataLen		: 0,
+		fullOffset  : 0,
+		maxOffset	: 0,
 	}
 }
 
@@ -115,8 +116,10 @@ func (me *remoteCache) Open(fileName string, flags uint32)int{
 			me.file = NewSliceFile(me.io)
 			ok = me.file.Open(fileName, flags)
 			if ok == 0 {
-				me.appendBuffer.offset = me.file.GetLength()
-				me.appendBlockStartOffset = me.file.GetLength()
+				me.appendBuffer.offset     = me.file.GetLength()
+				me.appendBuffer.fullOffset = me.appendBuffer.offset 
+				me.appendBuffer.maxOffset  = me.appendBuffer.offset
+				me.appendBlockStartOffset  = me.file.GetLength()
 				me.appendBlockCount = 0
 				me.fileLen = me.file.GetLength()				
 			}else{
@@ -165,10 +168,10 @@ func (me *remoteCache) Read(dest []byte, offset int64)(int) {
 	if remainLen > 0 && curOffset >= me.appendBuffer.offset {
 		start := int(curOffset - me.appendBuffer.offset)
 		n := 0
-		if me.appendBuffer.dataLen - start >= len(curDest) {
+		if me.appendBuffer.maxOffset - curOffset >= int64(len(curDest)) {
 			n = len(curDest)
 		}else{
-			n = me.appendBuffer.dataLen - start
+			n = int(me.appendBuffer.maxOffset - curOffset)
 		}
 		copy(curDest, me.appendBuffer.buffer[start: start + n])
 		remainLen -= n
@@ -180,10 +183,14 @@ func (me *remoteCache) Read(dest []byte, offset int64)(int) {
 
 //write function
 func (me *remoteCache) Write(data []byte, offset int64) int {
+	//"write" must be serialized
+	me.mtxWrite.Lock()
+	defer me.mtxWrite.Unlock()
+	
 	log.Printf("Write is called for file %s, offset=%d, data length=%d\n", me.fileName, offset, len(data))
 	
 	if me.mtTaskStarted == false {
-		go me.blockMaintainTask()
+		//go me.blockMaintainTask()
 		me.mtTaskStarted = true
 	}
 	
@@ -194,7 +201,8 @@ func (me *remoteCache) Write(data []byte, offset int64) int {
 	
 	//append case
 	log.Printf("me.fileLen=%d\n", me.fileLen)
-	if offset == me.fileLen {
+	//IMPORTANT: the offset may not continous
+	if offset >= me.fileLen {
 		log.Printf("Append file, file length=%d\n", me.fileLen)
 		return me.appendFile(data, offset)
 	}
@@ -222,11 +230,13 @@ func (me *remoteCache) Flush()int {
 		return 0
 	}
 	
-	log.Printf("Flush pendding write: me.appendBlockCount=%d, me.appendBuffer.dataLen=%d\n", 
-				me.appendBlockCount, me.appendBuffer.dataLen)
-				
+	dataLen := me.appendBuffer.maxOffset - me.appendBuffer.offset
+	
+	log.Printf("Flush pendding write: me.appendBlockCount=%d, dataLen=%d\n", 
+				me.appendBlockCount, dataLen)
+	
 	return me.file.Append(me.appendBlocks[0:me.appendBlockCount], 
-							me.appendBuffer.buffer[0:me.appendBuffer.dataLen])
+							me.appendBuffer.buffer[0:dataLen])
 	
 	//run parts combination
 	//tc := taskCmd{cmd: TASK_COMBINE_T2, waitChan: make(chan int)}
@@ -331,10 +341,16 @@ func (me *remoteCache) appendFile(data []byte, offset int64) int {
 	
 	remainN := len(data)
 	curData := data
+	curOffset := offset
 	
 	for remainN > 0 {
 		//save data to buffer first
-		freeN := me.appendBuffer.bufferLen - me.appendBuffer.dataLen
+		start := int(curOffset - me.appendBuffer.offset)
+		freeN := me.appendBuffer.bufferLen - start
+		if freeN <= 0 {
+			log.Printf("There must be something wrong: offset = %d\n", curOffset)
+			return fscommon.EIO
+		}
 		copyN := 0
 		if freeN > remainN {
 			copyN = remainN
@@ -342,28 +358,53 @@ func (me *remoteCache) appendFile(data []byte, offset int64) int {
 			copyN = freeN
 		}
 		
-		buff := me.appendBuffer.buffer[me.appendBuffer.dataLen:]
+		buff := me.appendBuffer.buffer[start:]
 		copy(buff, curData[0:copyN])
 		
-		me.appendBuffer.dataLen += copyN
+		//let's see if we can move fullOffset forward
+		n := curOffset + int64(copyN) - me.appendBuffer.fullOffset
+		if curOffset <= me.appendBuffer.fullOffset && n > 0 {
+			me.appendBuffer.fullOffset += n
+			
+			//fullOffset get moved, check list
+			for off,m := range me.distWriteList {
+				if off <= me.appendBuffer.fullOffset {
+					if off + int64(m) > me.appendBuffer.fullOffset {
+						me.appendBuffer.fullOffset += (off + int64(m) - me.appendBuffer.fullOffset)
+					} 
+					delete(me.distWriteList, off)
+				}
+			}
+		
+		}else{
+			me.distWriteList[curOffset] = copyN			//discontinous write, add to list
+		}
+		
+		if curOffset + int64(copyN) > me.appendBuffer.maxOffset {
+			me.appendBuffer.maxOffset = curOffset + int64(copyN)
+		}
+				
+		curOffset += int64(copyN)
 		remainN -= copyN
 		curData = curData[copyN:]
-		me.fileLen += int64(copyN)
+		me.fileLen = me.appendBuffer.maxOffset	//file length
 		
-		//buffer is full, trigger T1 block uploading
-		if me.appendBuffer.dataLen == me.appendBuffer.bufferLen {
+		//buffer data length reach FILE_BLOCK_SIZE, trigger T1 block uploading
+		dLen := me.appendBuffer.fullOffset - me.appendBuffer.offset
+		if dLen >= FILE_BLOCK_SIZE {
 			
 			//upload the buffer
 			name := me.file.getBlockFileName(me.appendBuffer.offset)
-			ok := me.io.putFile(name, me.appendBuffer.buffer)
-			if ok != 0 {		//we cannot move forward if buffer cannot be uploaded
+			ok := me.io.putFile(name, me.appendBuffer.buffer[0:dLen])
+			if ok < 0 {		//we cannot move forward if buffer cannot be uploaded
 				log.Println("Failed to upload buffer to file ", name)
 				return ok
 			}
 			
 			me.appendBuffer.offset += FILE_BLOCK_SIZE
 			me.appendBlockCount += 1
-			me.appendBuffer.dataLen = 0
+			//TODO: clean unused buffer area
+			copy(me.appendBuffer.buffer, me.appendBuffer.buffer[dLen:])
 		}
 	}
 	
@@ -395,24 +436,6 @@ func (me *remoteCache) appendFile(data []byte, offset int64) int {
 	return len(data)
 }
 
-//upload last part of the file
-//it may be the whole file itself
-/* func (me *remoteCache) uploadLastPart(name string)(int) {
-	if me.appendBuffer.dataLen == 0 {
-		return 0
-	}
-	
-	if len(name) == 0 {
-		name = fmt.Sprintf("$cache$/%s.T1_%d", me.fileName, me.t1BlockNumEnd)
-	}
-	
-	ok := me.io.putFile(name, me.appendBuffer.buffer[0:me.appendBuffer.dataLen])
-	if ok < 0 {		//we cannot move forward if buffer cannot be uploaded
-		log.Println("Failed to upload last part for file ", name)
-		return ok
-	}
-	return 0
-} */
 
 func (me *remoteCache) randomWrite(data []byte, offset int64) int {
 	//allocate modify buffer if not yet
@@ -430,164 +453,12 @@ func (me *remoteCache) randomWrite(data []byte, offset int64) int {
 	return 0
 }
 
-//"offset" is base on start point of cache
-/* func (me *remoteCache) readAppendCache(dest []byte, offset int64)(int) {
-	var n int64 = 0
-	var count = len(dest)
-	var rc int
-	var readLen int = 0
-	
-	//really need look into append buffer now
-	//get data from maintain task
-	blknum := (offset+FILE_BLOCK_SIZE) / FILE_BLOCK_SIZE
-	
-	//It's in T1 block. so all data will be in T1 blocks
-	if blknum >= me.t1BlockNumStart {
-		for count>0 {	//loop until all data is read, or reach EOF
-			name := fmt.Sprintf("$cache$/%s.T1_%d", me.fileName, blknum)
-			blkoff := offset % FILE_BLOCK_SIZE
-			rc = me.io.getBuffer(name, dest[n:], blkoff)
-			if rc != int(n) {
-				return rc
-			}
-			count -= rc		//reduce got length
-			offset += int64(rc)
-			readLen += rc
-			blknum++
-		}
-		return readLen
-	//at least part of data is in T2 block
-	} else if blknum < me.t1BlockNumStart {
-		blknum := (offset+FILE_BLOCK_SIZE*1024) / (FILE_BLOCK_SIZE*1024)
-		if blknum < me.t2BlockNumStart {
-			log.Println("There is something wrong with block scope.")
-			return -1
-		}
-		for count > 0 {
-			name := fmt.Sprintf("$cache$/%s.T2_%d", me.fileName, blknum)
-			blkoff := offset % (FILE_BLOCK_SIZE*1024)
-			rc = me.io.getBuffer(name, dest[n:], blkoff)
-			if rc != int(n) {
-				return rc
-			}
-			count -= rc		//reduce got length
-			offset += int64(rc)
-			readLen += rc
-			blknum++
-		}
-	}
-	return 0
-} */
 
-func (me *remoteCache) combineFileForAppend(oriFile string, fsize int64)(int) {	
-	log.Printf("combineFileForAppend is called for file %s, fsize=%d", oriFile, fsize)
-	var ok int
-	var sliceSize int64		//track current slice size
-	
-	//original file size is less than 5MB, so we cannot use multipart copy here
-	if fsize < FILE_BLOCK_SIZE {
-		
-		//special case: only one block in append buffer, and original file does not exist, or its size is zero
-		if (fsize <= 0) && (me.appendBlockNumEnd == me.appendBlockNumStart) {
-			ok = me.io.putFile(oriFile, me.appendBuffer.buffer[0:me.appendBuffer.dataLen])
-			if ok < 0 {
-				return ok
-			}else{
-				return 0
-			}
-		}
-		
-		tmpBuff := make([]byte, 2*FILE_BLOCK_SIZE)
-		//download original file
-		var n int = 0;
-		if fsize > 0 {
-			n = me.io.getBuffer(me.fileName, tmpBuff, 0)
-		}else{
-			n = 0		//for case original file does not exist, or its size is zero
-		}
-		
-		//download 1st append block (it may be in append buffer if there is only one append block)
-		var m int = 0;
-		if me.appendBlockNumEnd > me.appendBlockNumStart {
-			name := fmt.Sprintf("$cache$/%s.A1_%d", me.fileName, me.appendBlockNumStart)
-			m = me.io.getBuffer(name, tmpBuff[n:], 0)
-		}else{
-			m = me.appendBuffer.dataLen
-			copy(tmpBuff[n:], me.appendBuffer.buffer[0:m])			
-		}
-		
-		//upload the combined version
-		ok = me.io.putFile(oriFile, tmpBuff[0:n+m])
-		if ok < 0 {
-			return ok
-		}
-		
-		//no additional blocks, we are ready to return
-		if me.appendBlockNumEnd == 0 {
-			return 0
-		}
-		
-		sliceSize = int64(n + m)
-	}else{
-		sliceSize = fsize
+func (me *remoteCache) GetInfo()(*fscommon.DirItem) {
+	return &fscommon.DirItem{
+		Name : me.fileName,
+		Size : uint64(me.fileLen),
+		Mtime: time.Now(),
+		Type : fscommon.S_IFREG,
 	}
-	
-	//at this stage, we are sure that last file slice is bigger than FILE_BLOCK_SIZE, so it can participate
-	//in a multipart copy process
-	
-	//a multipart copy process
-	tgt := fmt.Sprintf("$cache$/%s_tmp")
-	uploadId,ok := me.io.startUpload(tgt)
-	if ok < 0 {
-		return ok
-	}
-	plist := make([]*s3.CompletedPart, 2)
-	
-	//original file is the 1st part of this multipart copy process
-	part, ok := me.io.copyPart(tgt, oriFile, "", uploadId, 1)
-	plist = append(plist, part)
-	
-	var pnum int64 = 2
-	startNum := me.appendBlockNumStart - 1
-	for i:=startNum; i< me.appendBlockNumEnd; i++ {
-		
-		if sliceSize + FILE_BLOCK_SIZE >= FILE_SLICE_SIZE {
-			//reach slice size, need commit the current slice
-		}
-	
-		name := fmt.Sprintf("$cache$/%s.A1_%d", me.fileName, i)
-		part, ok := me.io.copyPart(tgt, name, "", uploadId, pnum)
-		if ok != 0 {
-			break
-		}
-		plist = append(plist, part)
-		pnum++
-	}
-	
-	//there is data left in append buffer, upload it as the last part
-	if me.appendBuffer.dataLen > 0 {
-		part, ok = me.io.uploadPart(tgt, me.appendBuffer.buffer[0:me.appendBuffer.dataLen], uploadId, pnum)
-		if ok != 0 {
-			return ok
-		}
-		plist = append(plist, part)
-	}
-	
-	//commit the copy operation
-	ok = me.io.completeUpload(tgt, uploadId, plist)
-	if ok != 0 {
-		return ok
-	}
-	
-	ok = me.io.Rename(tgt, oriFile)
-	
-	//remove append blocks
-	for i:=me.appendBlockNumStart; i< me.appendBlockNumEnd; i++ {
-		name := fmt.Sprintf("$cache$/%s.A1_%d", me.fileName, i)
-		me.io.Unlink(name)
-	}
-	
-	return ok
 }
-
-

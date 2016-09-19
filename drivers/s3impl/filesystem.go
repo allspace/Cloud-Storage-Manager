@@ -188,13 +188,18 @@ func (me *S3FileSystemImpl) ReleaseDir() (int) {
 }
 
 func (me *S3FileSystemImpl) GetAttr(path string)(*fscommon.DirItem, int) {
-	di,ok := me.dirCache.Get(path);
+	di,ok := me.fileMgr.GetFileInfo(path)
 	if ok {
 		return di, 0
-	}else{
-		//get attributes from remote
-		return me._getAttrFromRemote(path, fscommon.S_IFUNKOWN)
 	}
+	
+	di,ok = me.dirCache.Get(path);
+	if ok {
+		return di, 0
+	}
+	
+	//get attributes from remote
+	return me._getAttrFromRemote(path, fscommon.S_IFUNKOWN)
 }
 
 //this function runs in big lock context
