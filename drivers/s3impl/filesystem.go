@@ -145,8 +145,8 @@ func (me *S3FileSystemImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 		if key == prefix {
 			continue
 		}
-		//hide slice group
-		if key[len(key)-1] == '>' {
+		//hide cache/tmp dir or slice group
+		if key[0] == '$' && key[len(key)-1] == '$' {
 			continue
 		}
 		

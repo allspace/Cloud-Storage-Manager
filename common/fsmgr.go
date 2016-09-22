@@ -2,6 +2,7 @@ package fscommon
 
 import(
 	"time"
+	"log"
 )
 
 
@@ -48,6 +49,12 @@ type FsInfo struct {
     Bsize   uint32
 }
 
+type ClientImpl interface {
+	Set(key string, value string) 
+	Connect(region string, keyId string, keyData string)(int) 
+	Mount(bucketName string)(FileSystemImpl, int)
+}
+
 type FileImpl interface {
 	GetInfo()(*DirItem) 
 	Read(dest []byte, off int64)(int) 
@@ -74,3 +81,27 @@ type FileSystemImpl interface {
 	Mkdir(path string, mode uint32)(int)
 }
 
+
+//trim the last slash if there is
+//get the last component of a path
+func GetLastPathComp(path string) string {
+	var end int
+	if path[len(path)-1] == '/' {
+		end = len(path) - 2
+	}else{
+		end = len(path) - 1
+	}
+	if end == -1 {		//means path == "/"
+		return ""
+	}
+	idx := 0	//if slash is not found, then we will use the string start from 0
+	for i := end; i >= 0; i-- {
+		if path[i] == '/' {
+			idx = i + 1
+			break
+		}
+	}
+	
+	log.Println("***", path, ": idx=", idx, ", end=", end)
+	return path[idx : end + 1]
+}

@@ -38,7 +38,7 @@ func (me *S3ClientImpl) Connect(region string, keyId string, skey string)(int) {
 	}
 	log.Println(region)
 	
-	//config.WithLogLevel(aws.LogDebug)
+	config.WithLogLevel(aws.LogDebug)
 	
 	me.sess = session.New(config)
 	me.s3 = s3.New(me.sess)
@@ -50,7 +50,7 @@ func (me *S3ClientImpl) Disconnect()(int) {
 	return 0
 }
 
-func (me *S3ClientImpl) Mount(bucketName string)(*S3FileSystemImpl, int) {
+func (me *S3ClientImpl) Mount(bucketName string)(fscommon.FileSystemImpl, int) {
 	vol := &S3FileSystemImpl{
 			svc			: me.s3,
 			bucketName	: bucketName,

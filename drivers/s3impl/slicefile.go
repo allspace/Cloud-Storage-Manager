@@ -44,8 +44,8 @@ func NewSliceFile(io *S3FileIO) *sliceFile{
 	return &sliceFile{ io : io}
 }
 
-func (me *sliceFile) getBlockFileName(blkId int64) string {
-	return fmt.Sprintf("%s>/blocks/%d", me.FileName, blkId)
+func (me *sliceFile) getCacheBlockFileName(blkId int64) string {
+	return fmt.Sprintf("/$cache$/%s/blocks/%d", me.FileName, blkId)
 }
 
 func (me *sliceFile) GetLength() int64 {
@@ -54,7 +54,7 @@ func (me *sliceFile) GetLength() int64 {
 
 func (me *sliceFile) Open(path string, flags uint32) int {
 	me.FileName     = path
-	me.metaFileName = fmt.Sprintf("%s>/meta", path)
+	me.metaFileName = fmt.Sprintf("/$slice$/%s/meta", path)
 	
 	ok := me.tryRecovery(path)
 	if ok < 0 {
@@ -125,7 +125,7 @@ func (me *sliceFile) tryRecovery(path string) int {
 	}
 	//check if SliceCount/FileLen is updated
 	//load slice list first
-	dir := fmt.Sprintf("%s>", path)
+	dir := fmt.Sprintf("$slice$/%s", path)
 	dis,ok := me.io.ListDir(dir)
 	if ok < 0 {
 		return ok
@@ -235,7 +235,7 @@ func (me *sliceFile) Read(data []byte, offset int64)int {
 	}
 	
 	//the first part
-	name := fmt.Sprintf("%s>/%d.dat", me.FileName, sliceNum)
+	name := fmt.Sprintf("$slice$/%s/files/%d.dat", me.FileName, sliceNum)
 	rc = me.io.getBuffer(name, data[0:n], sliceOffset)
 	if n == int64(reqLen) {
 		return rc
@@ -249,7 +249,7 @@ func (me *sliceFile) Read(data []byte, offset int64)int {
 	//the second part falls into next slice
 	sliceNum++
 	n = int64(reqLen) - n
-	name = fmt.Sprintf("%s>/%d.dat", me.FileName, sliceNum)
+	name = fmt.Sprintf("$slice$/%s/files/%d.dat", me.FileName, sliceNum)
 	rc = me.io.getBuffer(name, data[n:], 0)
 	if rc == int(n) {
 		return reqLen
@@ -312,7 +312,7 @@ func (me *sliceFile) Append(blocks []int64, data []byte) int{
 		
 	//need create a new slice
 	if tmpLen >= me.meta.SliceSize {
-		sliceFileName := fmt.Sprintf("%s>/%d.dat", me.meta.SliceCount)
+		sliceFileName := fmt.Sprintf("$slice$/%s/files/%d.dat", me.meta.SliceCount)
 		byteRange := fmt.Sprintf("bytes=0-%d", me.meta.SliceSize)
 		ok = me.io.copyFileByRange(sliceFileName, tmpFile, byteRange)
 		if ok < 0 {
@@ -364,32 +364,6 @@ func (me *sliceFile) Truncate(size uint64)int {
 	}
 	return 0
 }
-
-
-//commit all pendding blocks, along with append buffer
-/* func (me *sliceFile) Flush(data []byte)int {
-	//no pendding block, only need flush append buffer
-	if me.pendingCount == 0 {
-		return me.catBuffer2Remote(me.meta.CurSliceFileName, me.meta.CurSliceFileLen, data)
-	}
-	
-	//there is pendding blocks, make sure curSliceFile is bigger than FILE_BLOCK_SIZE
-	ok := me.sanityCurSlice()
-	if ok < 0 {
-		return ok
-	}
-	
-	//start copy process
-	totalLen,ok :=  me.catBlocksAndBuffer(me.meta.CurSliceFileName, me.meta.CurSliceFileLen, 
-										me.pendingBlocks[0:me.pendingCount], data)
-	if ok < 0 {
-		return ok
-	}
-	me.meta.CurSliceFileLen = totalLen
-	me.saveMeta()
-	return 0
-} */
-
 
 func (me *sliceFile) catBuffer2SmallSlice(rt string, rtLen int64, data []byte)int {	
 	//remote file is zero length
@@ -456,7 +430,7 @@ func (me *sliceFile) mergeBlocksAndBuffer(tgt string, rt string, rtLen int64, bl
 	if rtLen > 0 && rtLen < S3_MIN_BLOCK_SIZE {
 		if len(blocks) > 0 {
 			tmpFile := fmt.Sprintf("$tmp$/%s.tmp3", rt)
-			file := me.getBlockFileName(blocks[0])
+			file := me.getCacheBlockFileName(blocks[0])
 			tmpLen := me.combineRemote(tmpFile, rt, rtLen, file, FILE_BLOCK_SIZE)
 			rt = tmpFile
 			rtLen = int64(tmpLen)
@@ -466,7 +440,7 @@ func (me *sliceFile) mergeBlocksAndBuffer(tgt string, rt string, rtLen int64, bl
 	
 	var totalLen int64 = 0
 
-	plist := make([]*s3.CompletedPart, 1)
+	plist := make([]*s3.CompletedPart, 0)
 	
 	uploadId,ok := me.io.startUpload(tgt)
 	if ok < 0 {
@@ -491,7 +465,10 @@ func (me *sliceFile) mergeBlocksAndBuffer(tgt string, rt string, rtLen int64, bl
 			if blkId < 0 {		//it's possible the list contains empty entries which means they have beem consumed
 				continue
 			}
-			file := me.getBlockFileName(blkId)
+			if blkId < me.meta.FileLen {	//we don't support random write, or we should discard outdated blocks
+				continue
+			}
+			file := me.getCacheBlockFileName(blkId)
 			cp,ok = me.io.copyPart(tgt, file, "", uploadId, pnum)
 			if ok < 0 {
 				return 0,ok
@@ -523,6 +500,7 @@ func (me *sliceFile) mergeBlocksAndBuffer(tgt string, rt string, rtLen int64, bl
 	if len(tmpFile) > 0 {
 		me.io.Unlink(tmpFile)
 	}
+	
 	return totalLen,0
 }
 

@@ -6,18 +6,27 @@ import(
 	
 	"brightlib.com/common"
 	"brightlib.com/drivers/s3impl"
+	"brightlib.com/drivers/aliyun"
 )
  
 
 func NewFileSystem(name string)(fscommon.FileSystemImpl, int) {
-
-	client := s3impl.NewClient()
+	var client fscommon.ClientImpl
+	switch name {
+		case "S3":
+			client = s3impl.NewClient()
+			break
+		case "Aliyun":
+		    client = aliyunimpl.NewClient()
+			break
+	}
 	
-	endPoint := os.Getenv("AWS_ENDPOINT")
-	keyId    := os.Getenv("AWS_KEY_ID")
-	key      := os.Getenv("AWS_ACCESS_KEY")
-	bucket   := os.Getenv("AWS_S3_BUCKET")
-	region   := os.Getenv("AWS_REGION")
+	
+	endPoint := os.Getenv("CS_ENDPOINT")
+	keyId    := os.Getenv("CS_KEY_ID")
+	key      := os.Getenv("CS_KEY_DATA")
+	bucket   := os.Getenv("CS_BUCKET")
+	region   := os.Getenv("CS_REGION")
 	
 	log.Println(endPoint)
 	

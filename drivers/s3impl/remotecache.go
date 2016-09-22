@@ -11,9 +11,7 @@ import (
 )
 
 const(
-	DEFAULT_CACHE_BUFFER_LEN = 5*1024*1024
 	FILE_BLOCK_SIZE			 = 5*1024*1024
-	T2_BLOCK_SIZE			 = 5*1024*1024*1024
 	FILE_SLICE_SIZE			 = 5*1024*1024*1024
 	
 	S3_MIN_BLOCK_SIZE        = 5*1024*1024
@@ -153,7 +151,7 @@ func (me *remoteCache) Read(dest []byte, offset int64)(int) {
 		blkIdx := int(((curOffset - me.appendBlockStartOffset) + FILE_BLOCK_SIZE) / FILE_BLOCK_SIZE)
 		blkOffset := me.appendBlocks[blkIdx]
 		start := curOffset - blkOffset
-		fileName := me.file.getBlockFileName(blkOffset)
+		fileName := me.file.getCacheBlockFileName(blkOffset)
 		n := me.io.getBuffer(fileName, curDest, start)
 		if n < 0 {
 			return n
@@ -394,7 +392,7 @@ func (me *remoteCache) appendFile(data []byte, offset int64) int {
 		if dLen >= FILE_BLOCK_SIZE {
 			
 			//upload the buffer
-			name := me.file.getBlockFileName(me.appendBuffer.offset)
+			name := me.file.getCacheBlockFileName(me.appendBuffer.offset)
 			ok := me.io.putFile(name, me.appendBuffer.buffer[0:dLen])
 			if ok < 0 {		//we cannot move forward if buffer cannot be uploaded
 				log.Println("Failed to upload buffer to file ", name)
@@ -422,8 +420,12 @@ func (me *remoteCache) appendFile(data []byte, offset int64) int {
 		}else{
 			//free entries
 			for i := 0; i < 1024; i++ {
+				if me.appendBlocks[i]>=0 {
+					me.io.Unlink(me.file.getCacheBlockFileName(me.appendBlocks[i]))
+				}
 				me.appendBlocks[i] = -1
 			}
+			
 			//move remained items to head
 			me.appendBlockCount -= 1024			
 			if me.appendBlockCount > 0 {

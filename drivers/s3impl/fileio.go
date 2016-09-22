@@ -41,15 +41,14 @@ func (me *S3FileIO) startUpload(name string) (string, int) {
 	return *rsp.UploadId, 0
 }
 
-func (me *S3FileIO) completeUpload(name string, uploadId string, plist []*s3.CompletedPart) int {
-
+func (me *S3FileIO) completeUpload(name string, uploadId string, plist []*s3.CompletedPart) int {	
 	params := &s3.CompleteMultipartUploadInput{
 		Bucket:   aws.String(me.bucketName),        // Required
 		Key:      aws.String(name),          // Required
 		UploadId: aws.String(uploadId), 			// Required
 		MultipartUpload: &s3.CompletedMultipartUpload{
 								Parts: 	plist,
-		},
+							},
 	}
 	_, err := me.svc.CompleteMultipartUpload(params)
 	if err != nil {

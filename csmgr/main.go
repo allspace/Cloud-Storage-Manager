@@ -16,7 +16,7 @@ import (
 
 
 func main() {
-
+	var fsType = flag.String("type", "S3", "file system type")
 	flag.Parse()
 	if len(flag.Args()) < 1 {
 		log.Fatal("Usage:\n  hello MOUNTPOINT")
@@ -24,7 +24,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags|log.Lshortfile)
 	
-	fs, _ := NewFileSystem("s3")
+	fs, _ := NewFileSystem(*fsType)
 	
 	nfs := pathfs.NewPathNodeFs(
 				&HelloFs{FileSystem: pathfs.NewDefaultFileSystem(), FileSystemImpl: fs}, 
