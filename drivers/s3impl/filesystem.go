@@ -37,29 +37,6 @@ func (me *S3FileSystemImpl) addDirCache(key string, di fscommon.DirItem) {
 	me.dirCache.Add(key, &di, fscommon.CACHE_LIFE_SHORT)
 }
 
-//trim the last slash if there is
-//get the last component of a path
-func (me *S3FileSystemImpl) getLastPathComp(path string) string {
-	var end int
-	if path[len(path)-1] == '/' {
-		end = len(path) - 2
-	}else{
-		end = len(path) - 1
-	}
-	if end == -1 {		//means path == "/"
-		return ""
-	}
-	idx := 0	//if slash is not found, then we will use the string start from 0
-	for i := end; i >= 0; i-- {
-		if path[i] == '/' {
-			idx = i + 1
-			break
-		}
-	}
-	
-	fmt.Println("***", path, ": idx=", idx, ", end=", end)
-	return path[idx : end + 1]
-}
 
 //get attributes for path/file
 //it can also be used to check if path/file exists
@@ -92,7 +69,7 @@ func (me *S3FileSystemImpl) _getAttrFromRemote(path string, iType int)(*fscommon
 		iType = fscommon.S_IFREG
 	}
 	return &fscommon.DirItem{
-				Name    : me.getLastPathComp(path),
+				Name    : fscommon.GetLastPathComp(path),
 				Type	: iType,
 				Size	: uint64(*rsp.ContentLength), 
 				Mtime	: *rsp.LastModified,
@@ -150,7 +127,7 @@ func (me *S3FileSystemImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 			continue
 		}
 		
-		dis[i].Name = me.getLastPathComp(key)	//need remove slash suffix and common prefix (for subdir)
+		dis[i].Name = fscommon.GetLastPathComp(key)	//need remove slash suffix and common prefix (for subdir)
 		dis[i].Type = fscommon.S_IFDIR
 		dis[i].Size = 0
 		
@@ -167,7 +144,7 @@ func (me *S3FileSystemImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 		}
 		
 		dis[j] = fscommon.DirItem{
-					Name : me.getLastPathComp(key),		//need remove common prefix
+					Name : fscommon.GetLastPathComp(key),		//need remove common prefix
 					Size : uint64(*(rsp.Contents[i].Size)),
 					Mtime: *rsp.Contents[i].LastModified,
 					//rsp.Contents[i].ETag 

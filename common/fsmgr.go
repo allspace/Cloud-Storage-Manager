@@ -81,7 +81,6 @@ type FileSystemImpl interface {
 	Mkdir(path string, mode uint32)(int)
 }
 
-
 //trim the last slash if there is
 //get the last component of a path
 func GetLastPathComp(path string) string {

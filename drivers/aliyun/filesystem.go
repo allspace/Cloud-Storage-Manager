@@ -2,6 +2,7 @@ package aliyunimpl
 
 import (
     //"os"
+	"strings"
 	"time"
     "log"
 	"strconv"
@@ -64,7 +65,14 @@ func (me *AliyunFSImpl) _getAttrFromRemote(path string, iType int)(*fscommon.Dir
 		size = 0
 	}
     const longForm = "Jan 2, 2006 at 3:04pm (MST)"
-    mtime, _ := time.Parse(longForm, meta["LastModified"][0])
+	
+	log.Println(path)
+	log.Println(meta["LastModified"])
+	 
+	var mtime time.Time
+	if len(meta["LastModified"]) > 0 {
+        mtime, _ = time.Parse(longForm, meta["LastModified"][0])
+	}
 	return &fscommon.DirItem{
 				Name    : fscommon.GetLastPathComp(path),
 				Type	: iType,
@@ -78,31 +86,6 @@ func (me *AliyunFSImpl) _getAttrFromRemote(path string, iType int)(*fscommon.Dir
 //Exported functions
 ///////////////////////////////////////////////////////////////////////////////
 
-
-
-func (me *AliyunFSImpl) PutFile(tgtName string, path string)int {
-    err := me.bucket.PutObjectFromFile(tgtName, path)
-    if err != nil {
-        log.Println(err)
-        return -5 //EIO
-    }
-    return 0
-}
-
-func (me *AliyunFSImpl) ListDir(path string)int {
-    lsRes, err := me.bucket.ListObjects()
-    if err != nil {
-        log.Println(err)
-        return -5 //EIO
-    }
-
-    for _, object := range lsRes.Objects {
-        log.Println("Objects:", object.Key)
-    }
-
-    return 0
-}
-
 func (me *AliyunFSImpl) OpenDir(path string) (int) {
 	return 0
 }
@@ -115,13 +98,8 @@ func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 	if len(prefix) != 0 && prefix[0] == '/' {
 		prefix = prefix[1:]
 	}
-	var lsRes oss.ListObjectsResult
-	var err error
-	if len(prefix) == 0 {
-		lsRes, err = me.bucket.ListObjects()
-	}else{
-		lsRes, err = me.bucket.ListObjects(oss.Prefix(prefix), oss.Delimiter("/"))
-	}
+
+	lsRes, err := me.bucket.ListObjects(oss.Prefix(prefix), oss.Delimiter("/"))
 	if err != nil {
 		log.Println(err)
 		return nil, fscommon.EIO
@@ -177,12 +155,12 @@ func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem , int) {
 
 
 func (me *AliyunFSImpl) GetAttr(path string)(*fscommon.DirItem, int) {
-	di,ok := me.fileMgr.GetFileInfo(path)
-	if ok {
-		return di, 0
-	}
+	//di,ok := me.fileMgr.GetFileInfo(path)
+	//if ok {
+	//	return di, 0
+	//}
 	
-	di,ok = me.dirCache.Get(path);
+	di,ok := me.dirCache.Get(path);
 	if ok {
 		return di, 0
 	}
@@ -192,11 +170,63 @@ func (me *AliyunFSImpl) GetAttr(path string)(*fscommon.DirItem, int) {
 }
 
 func (me *AliyunFSImpl) NewFileImpl(path string)(fscommon.FileImpl, int) {
-    return nil,0
+	fio := &AliyunIO{
+		bucket		: me.bucket,
+		fs          : me,
+		bucketName	: me.bucketName,
+	}
+	
+	rc := NewAliyunFile(fio)
+	return rc,0
 }
 
 func (me *AliyunFSImpl) Open(path string, flags uint32)(*fscommon.FileObject, int) {
-    return nil,0
+	//look in file instance manager first
+	//if successful, this will increase instance reference count
+	log.Println("Try to find existing object for file", path)
+	
+	fo,ok := me.fileMgr.GetInstance(path)
+	if ok==0 {
+		return fo, 0
+	}
+	log.Println("Verify existing for file", path)
+	//var fileNotExist bool = false
+	
+	//verify if the file exists, and if user has permission to open the file in selected mode
+	_, ok = me._getAttrFromRemote(path, fscommon.S_IFREG)
+	switch ok {
+		case fscommon.EIO:
+			return nil,ok
+		case fscommon.ENOENT:
+			if ((flags&fscommon.O_CREAT)==0) {
+				log.Printf("File %s does not exist, but open it without O_CREAT flag\n", path)
+				return nil,ok
+			}
+			//fileNotExist = true
+			break
+	}
+	
+	log.Println("Trying to allocate a file instance for file ", path)
+	fo,ok = me.fileMgr.Allocate(me, path)
+	if ok != 0 {
+		return nil, ok
+	}
+/* 	if ok==0 && fileNotExist==true {
+		me.dirCache.Add(path,&fscommon.DirItem{
+			Name : path,
+			Size : 0,
+			Type : fscommon.S_IFREG,
+			Mtime: time.Now(),
+		}, fscommon.CACHE_LIFE_LONG)
+	} */
+
+	//call this function here to avoid running it in big lock context
+	ok = fo.Open(path, flags)
+	if ok == 0 {
+		return fo, ok
+	} else {
+		return nil, ok
+	}
 }
 
 func (me *AliyunFSImpl) Chmod(name string, mode uint32)(int) {
@@ -217,6 +247,17 @@ func (me *AliyunFSImpl) StatFs(name string)(*fscommon.FsInfo, int) {
 }
 
 func (me *AliyunFSImpl) Mkdir(path string, mode uint32)(int) {
+	var key string
+	if path[len(path)-1] != '/' {
+	    key = path + "/"
+	}else{
+	    key = path
+	}
+    err := me.bucket.PutObject(key, strings.NewReader(""))
+    if err != nil {
+        log.Println(err)
+		return fscommon.EIO
+    }
     return 0
 }
 
@@ -231,6 +272,11 @@ func (me *AliyunFSImpl) Unlink(path string)(int) {
 		return fscommon.EBUSY
 	}
 	
+	err := me.bucket.DeleteObject(path)
+	if err != nil {
+		log.Println(err)
+		return fscommon.EIO
+	}
 	return 0
 }
 

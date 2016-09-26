@@ -171,7 +171,7 @@ func (me *S3FileIO) copyFileByRange(tgt string, src string, byteRange string) in
 	return ok
 }
 
-func (me *S3FileIO) putFile(name string, data []byte) int {
+func (me *S3FileIO) PutBuffer(name string, data []byte) int {
 /* 	md := map[string]*string{
         "x-csm-file-slice-size": 	aws.String(string(FILE_SLICE_SIZE)), 
 		"x-csm-slice-file"	   :    aws.String("1"),
@@ -192,11 +192,11 @@ func (me *S3FileIO) putFile(name string, data []byte) int {
 	return len(data)
 }
 
-func (me *S3FileIO) zeroFile(name string) int {
-	return me.putFile(name, make([]byte, 0))
+func (me *S3FileIO) ZeroFile(name string) int {
+	return me.PutBuffer(name, make([]byte, 0))
 }
 
-func (me *S3FileIO) getBuffer(name string, dest []byte, offset int64) int {
+func (me *S3FileIO) GetBuffer(name string, dest []byte, offset int64) int {
 
 	byteRange := fmt.Sprintf("bytes=%d-%d", offset, offset + int64(len(dest)) -1)
 	log.Println("Read file, range = ", byteRange)
@@ -311,7 +311,7 @@ func (me *S3FileIO) Unlink(name string)(int) {
 	return me.fs.Unlink(name)
 }
 
-func (me *S3FileIO) ListDir(path string) ([]fscommon.DirItem , int) {
+func (me *S3FileIO) ListFile(path string) ([]fscommon.DirItem , int) {
 	
 	prefix := path
 	if len(prefix) != 0 && prefix != "/" {
