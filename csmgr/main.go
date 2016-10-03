@@ -2,58 +2,30 @@ package main
 
 import (
 	//"fmt"
-	"os"
-	"os/signal"
 	"flag"
 	"log"
-	
-	//"brightlib.com/drivers/s3"
-	"github.com/hanwen/go-fuse/fuse"
-	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/hanwen/go-fuse/fuse/pathfs"
+
+	cfg "brightlib.com/config"
+	"brightlib.com/fsvc"
 	//"brightlib.com/common"
 )
 
-
 func main() {
-	var fsType = flag.String("type", "S3", "file system type")
+	flag.String("vendor_type", "S3", "file system type")
 	flag.Parse()
 	if len(flag.Args()) < 1 {
-		log.Fatal("Usage:\n  hello MOUNTPOINT")
+		//log.Fatal("Usage:\n  hello MOUNTPOINT")
 	}
 
-	log.SetFlags(log.LstdFlags|log.Lshortfile)
-	
-	fs, _ := NewFileSystem(*fsType)
-	
-	nfs := pathfs.NewPathNodeFs(
-				&HelloFs{FileSystem: pathfs.NewDefaultFileSystem(), FileSystemImpl: fs}, 
-				&pathfs.PathNodeFsOptions{Debug:true})
-				
-	server, _, err := nodefs.MountRoot(
-				flag.Arg(0), 
-				nfs.Root(), 
-				&nodefs.Options{Debug:true})
-				
-	if err != nil {
-		log.Fatalf("Mount fail: %v\n", err)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	cfg.Default.Init("")
+	cfg.Default.PrintAll()
+
+	fs, _ := NewFileSystem(cfg.Default.GetStringEx("VENDOR_TYPE", ""))
+	if fs == nil {
+		log.Println("Failed to create file system instance.")
+		return
 	}
-	
-	//register signal handler
-	go handleSignal(server)
-	
-	server.Serve()
-	
-}
-
-func handleSignal(ms *fuse.Server){
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-
-	// Block until a signal is received.
-	s := <-c
-	log.Println("Got signal:", s)
-	
-	//umount the mount point
-	ms.Unmount()
+	fsvc.FileSystemMainLoop(fs, flag.Arg(0))
 }

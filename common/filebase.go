@@ -58,3 +58,5 @@ func (me *FileImplBase) GetInfo()(*DirItem) {
 		Type : S_IFREG,
 	}
 }
+
+

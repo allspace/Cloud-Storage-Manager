@@ -1,18 +1,50 @@
-package main
+package fsvc
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"time"
-	//"os"
 	//"flag"
 	"log"
-	
+
+	"brightlib.com/common"
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/hanwen/go-fuse/fuse/pathfs"
-	"brightlib.com/common"
 )
 
+func FileSystemMainLoop(fs fscommon.FileSystemImpl, mnt string) {
+	nfs := pathfs.NewPathNodeFs(
+		&HelloFs{FileSystem: pathfs.NewDefaultFileSystem(), FileSystemImpl: fs},
+		&pathfs.PathNodeFsOptions{Debug: true})
+
+	server, _, err := nodefs.MountRoot(
+		mnt,
+		nfs.Root(),
+		&nodefs.Options{Debug: true})
+
+	if err != nil {
+		log.Fatalf("Mount fail: %v\n", err)
+	}
+
+	//register signal handler
+	go handleSignal(server)
+
+	server.Serve()
+}
+
+func handleSignal(ms *fuse.Server) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+
+	// Block until a signal is received.
+	s := <-c
+	log.Println("Got signal:", s)
+
+	//umount the mount point
+	ms.Unmount()
+}
 
 type HelloFs struct {
 	pathfs.FileSystem
@@ -24,12 +56,10 @@ type HelloFile struct {
 	fileObject *fscommon.FileObject
 }
 
-
-
-func (me *HelloFs) getMode(mode int)(uint32) {
+func (me *HelloFs) getMode(mode int) uint32 {
 	if mode == fscommon.S_IFDIR {
 		return fuse.S_IFDIR | 0755
-	}else{
+	} else {
 		return fuse.S_IFREG | 0644
 	}
 }
@@ -38,23 +68,23 @@ func (me *HelloFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse
 
 	//root of mount point
 	//go-fuse is different than c-fuse: there is no leading slash for every full path
-	if name == "" {		
+	if name == "" {
 		return &fuse.Attr{
-			Mode: fuse.S_IFDIR | 0755,
-			Size: 0,
+			Mode:  fuse.S_IFDIR | 0755,
+			Size:  0,
 			Mtime: uint64(time.Now().Unix()),
 		}, fuse.OK
 	}
-	
+
 	//get attributes from cache or remote
-	di,ok := me.FileSystemImpl.GetAttr(name)
-	if ok==0 {
+	di, ok := me.FileSystemImpl.GetAttr(name)
+	if ok == 0 {
 		return &fuse.Attr{
-			Mode: me.getMode(di.Type),
-			Size: di.Size,
+			Mode:  me.getMode(di.Type),
+			Size:  di.Size,
 			Mtime: uint64(di.Mtime.Unix()),
 		}, fuse.OK
-	}else{
+	} else {
 		return nil, fuse.ENOENT
 	}
 }
@@ -62,12 +92,12 @@ func (me *HelloFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse
 func (me *HelloFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	//
 	fmt.Println("***OpenDir: ", name)
-	
-	dirs,n := me.FileSystemImpl.ReadDir(name)
-	if n<0 {
+
+	dirs, n := me.FileSystemImpl.ReadDir(name)
+	if n < 0 {
 		return nil, fuse.ENOENT
 	}
-	
+
 	c = make([]fuse.DirEntry, n)
 	for i := range dirs {
 		//if empty(dirs[i].Name) {
@@ -77,17 +107,17 @@ func (me *HelloFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntr
 		c[i].Mode = me.getMode(dirs[i].Type)
 		fmt.Println(dirs[i].Name)
 	}
-	
+
 	return c, fuse.OK
 }
 
 func (me *HelloFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
-	
+
 	fh, ok := me.FileSystemImpl.Open(name, flags)
-	if ok==0 {
+	if ok == 0 {
 		log.Println("Open file ", name, " successfully.")
 		return &HelloFile{fileObject: fh}, fuse.OK
-	}else{
+	} else {
 		log.Println("Failed to open ", name)
 		return nil, fuse.ENOENT
 	}
@@ -101,12 +131,12 @@ func (me *HelloFs) StatFs(name string) *fuse.StatfsOut {
 	fi, ok := me.FileSystemImpl.StatFs(name)
 	if ok != 0 {
 		return nil
-	}else{
+	} else {
 		return &fuse.StatfsOut{
-			Blocks	: fi.Blocks,
-			Bfree	: fi.Bfree,
-			Bavail	: fi.Bavail,
-			Bsize	: fi.Bsize,
+			Blocks: fi.Blocks,
+			Bfree:  fi.Bfree,
+			Bavail: fi.Bavail,
+			Bsize:  fi.Bsize,
 		}
 	}
 }
@@ -115,7 +145,7 @@ func (me *HelloFs) Unlink(name string, context *fuse.Context) (code fuse.Status)
 	ok := me.FileSystemImpl.Unlink(name)
 	if ok != 0 {
 		return fuse.ENOENT
-	}else{
+	} else {
 		return fuse.OK
 	}
 }
@@ -124,7 +154,7 @@ func (me *HelloFs) Mkdir(name string, mode uint32, context *fuse.Context) fuse.S
 	ok := me.FileSystemImpl.Mkdir(name, mode)
 	if ok != 0 {
 		return fuse.ENOENT
-	}else{
+	} else {
 		return fuse.OK
 	}
 }
@@ -133,11 +163,9 @@ func (me *HelloFs) Chmod(name string, mode uint32, context *fuse.Context) (code 
 	return fuse.OK
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////
 //For file related functions
 ///////////////////////////////////////////////////////////////////////////////
-
 
 func (me *HelloFile) SetInode(*nodefs.Inode) {
 
@@ -153,18 +181,18 @@ func (me *HelloFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
 
 func (me *HelloFile) Truncate(size uint64) fuse.Status {
 	rc := me.fileObject.Truncate(size)
-	if rc==0 {
+	if rc == 0 {
 		return fuse.OK
-	}else{
+	} else {
 		return fuse.EIO
 	}
 }
 
 func (me *HelloFile) Flush() fuse.Status {
 	rc := me.fileObject.Flush()
-	if rc==0 {
+	if rc == 0 {
 		return fuse.OK
-	}else{
+	} else {
 		return fuse.EIO
 	}
 }
@@ -178,12 +206,12 @@ func (me *HelloFile) Release() {
 func (me *HelloFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 	log.Println("Get read request at: ", off, " length ", len(dest))
 	log.Println(me.fileObject)
-	
+
 	n := me.fileObject.Read(dest, off)
 	if n < 0 {
-		return nil, fuse.EIO     
+		return nil, fuse.EIO
 	}
-	
+
 	log.Println("Read data for ", n)
 	return fuse.ReadResultData(dest), fuse.OK
 }
@@ -191,14 +219,10 @@ func (me *HelloFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status)
 func (me *HelloFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
 	n := me.fileObject.Write(data, off)
 	if n < 0 {
-		return 0, fuse.EIO     
+		return 0, fuse.EIO
 	}
 	log.Printf("Succesfully write data for offset %d length %d\n", off, n)
 	return uint32(n), fuse.OK
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////
-
-
-

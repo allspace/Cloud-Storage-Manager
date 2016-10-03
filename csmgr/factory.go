@@ -1,41 +1,43 @@
 package main
 
-import(	
-	"os"
+import (
 	"log"
-	
-	"brightlib.com/common"
-	"brightlib.com/drivers/s3impl"
-	"brightlib.com/drivers/aliyun"
-)
- 
+	"strings"
+	//"os"
 
-func NewFileSystem(name string)(fscommon.FileSystemImpl, int) {
+	"brightlib.com/common"
+	cfg "brightlib.com/config"
+	"brightlib.com/drivers/aliyun"
+	"brightlib.com/drivers/s3impl"
+)
+
+func NewFileSystem(name string) (fscommon.FileSystemImpl, int) {
 	var client fscommon.ClientImpl
-	switch name {
-		case "S3":
-			client = s3impl.NewClient()
-			break
-		case "Aliyun":
-		    client = aliyunimpl.NewClient()
-			break
+	switch strings.ToLower(name) {
+	case "s3":
+		client = s3impl.NewClient()
+		break
+	case "aliyun":
+		client = aliyunimpl.NewClient()
+		break
+	default:
+		log.Printf("Unknown vendor type: %s.", name)
+		return nil, -1
 	}
-	
-	
-	endPoint := os.Getenv("CS_ENDPOINT")
-	keyId    := os.Getenv("CS_KEY_ID")
-	key      := os.Getenv("CS_KEY_DATA")
-	bucket   := os.Getenv("CS_BUCKET")
-	region   := os.Getenv("CS_REGION")
-	
+
+	endPoint, _ := cfg.Default.GetString("ENDPOINT")
+	keyId, _ := cfg.Default.GetString("KEY_ID")
+	key, _ := cfg.Default.GetString("KEY_DATA")
+	bucket, _ := cfg.Default.GetString("BUCKET")
+	region, _ := cfg.Default.GetString("REGION")
+
 	log.Println(endPoint)
-	
-	if len(endPoint)>0 {
+
+	if len(endPoint) > 0 {
 		client.Set("EndPoint", endPoint)
 	}
 	client.Connect(region, keyId, key)
-	fs,_ := client.Mount(bucket)
-	
+	fs, _ := client.Mount(bucket)
+
 	return fs, 0
 }
-

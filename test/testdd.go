@@ -1,20 +1,22 @@
+// +build test
+
 package main
 
 import (
-	"os"
-	"log"
 	"flag"
+	"log"
+	"os"
 	//"bufio"
 )
 
 func main() {
 
 	var fileName = flag.String("file", "", "target file path")
-	
+
 	flag.Parse()
 	var buf = make([]byte, 64*1024)
-	
-	file,err := os.Create(*fileName)
+
+	file, err := os.Create(*fileName)
 	if err != nil {
 		log.Fatal(err)
 	}
