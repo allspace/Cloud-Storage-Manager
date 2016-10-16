@@ -1,3 +1,5 @@
+// +build linux
+
 package fsvc
 
 import (
@@ -10,13 +12,13 @@ import (
 	"github.com/keybase/kbfs/dokan"
 	"github.com/keybase/kbfs/dokan/winacl"
 
-	"brightlib.com/common"
+	"github.com/allspace/csmgr/common"
 )
 
 func FileSystemMainLoop(fs fscommon.FileSystemImpl, mnt string) {
 	csfs := &CSFileSystem{fsbk: fs}
 
-	mp, err := dokan.Mount(&dokan.Config{FileSystem: csfs, Path: `Q:`})
+	mp, err := dokan.Mount(&dokan.Config{FileSystem: csfs, Path: "Q:"})
 	if err != nil {
 		log.Fatal("Mount failed:", err)
 	}
@@ -57,10 +59,11 @@ func (me *CSFileSystem) CreateFile(ctx context.Context, fi *dokan.FileInfo, data
 				return nil, isDir, dokan.ErrObjectPathNotFound
 			}
 		} else {
+			log.Printf("CreateFile returns ErrAccessDenied")
 			return nil, isDir, dokan.ErrAccessDenied
 		}
 	}
-	if di.Type == fscommon.S_IFDIR {
+	if di.IsDir() {
 		isDir = true
 	}
 
@@ -70,6 +73,7 @@ func (me *CSFileSystem) CreateFile(ctx context.Context, fi *dokan.FileInfo, data
 		if data.CreateDisposition == dokan.FileCreate {
 			ok := me.fsbk.Mkdir(path, 0)
 			if ok != 0 {
+				log.Printf("CreateFile returns ErrAccessDenied")
 				return nil, true, dokan.ErrAccessDenied
 			} else {
 				return &CSFile{fsbk: me.fsbk}, true, nil
@@ -86,6 +90,7 @@ func (me *CSFileSystem) CreateFile(ctx context.Context, fi *dokan.FileInfo, data
 		if ok == 0 {
 			return &CSFile{fsbk: me.fsbk, fibk: fh}, false, nil
 		} else {
+			log.Printf("CreateFile returns ErrAccessDenied")
 			return nil, false, dokan.ErrAccessDenied
 		}
 	}
@@ -113,6 +118,10 @@ func (me *CSFileSystem) MoveFile(ctx context.Context, source *dokan.FileInfo, ta
 	return dokan.ErrNotSupported
 }
 
+func (me *CSFileSystem) ErrorPrint(err error) {
+	log.Println(err)
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 func (me *CSFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
@@ -123,18 +132,18 @@ func (me *CSFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern str
 	dis, _ := me.fsbk.ReadDir(path)
 	for _, di := range dis {
 		var fa dokan.FileAttribute
-		if di.Type == fscommon.S_IFREG {
+		if di.IsDir() == false {
 			fa |= dokan.FileAttributeNormal
 		} else {
 			fa |= dokan.FileAttributeDirectory
 		}
 		st := &dokan.NamedStat{
-			Name: di.Name,
+			Name: di.Name(),
 			Stat: dokan.Stat{
 				FileAttributes: fa,
-				FileSize:       int64(di.Size),
-				Creation:       di.Mtime,
-				LastWrite:      di.Mtime,
+				FileSize:       di.Size(),
+				Creation:       di.ModTime(),
+				LastWrite:      di.ModTime(),
 				LastAccess:     time.Now(),
 			},
 		}
@@ -154,7 +163,7 @@ func (me *CSFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*
 	}
 
 	var fa dokan.FileAttribute
-	if di.Type == fscommon.S_IFREG {
+	if di.IsDir() == false {
 		fa |= dokan.FileAttributeNormal
 	} else {
 		fa |= dokan.FileAttributeDirectory
@@ -162,17 +171,21 @@ func (me *CSFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*
 
 	return &dokan.Stat{
 		FileAttributes:     fa,
-		Creation:           di.Mtime,
+		Creation:           di.ModTime(),
 		LastAccess:         time.Now(),
-		LastWrite:          di.Mtime,
+		LastWrite:          di.ModTime(),
 		VolumeSerialNumber: 0,
-		FileSize:           int64(di.Size),
-		FileIndex:          1,
+		FileSize:           di.Size(),
+		FileIndex:          0,
 	}, nil
 }
 
 func (me *CSFile) Cleanup(ctx context.Context, fi *dokan.FileInfo) {
+	path := strings.Replace(fi.Path(), "\\", "/", -1)
 
+	if fi.IsDeleteOnClose() {
+		me.fsbk.Unlink(path)
+	}
 }
 
 func (me *CSFile) CloseFile(ctx context.Context, fi *dokan.FileInfo) {
@@ -182,17 +195,28 @@ func (me *CSFile) CloseFile(ctx context.Context, fi *dokan.FileInfo) {
 }
 
 func (me *CSFile) CanDeleteFile(ctx context.Context, fi *dokan.FileInfo) error {
-	return dokan.ErrAccessDenied
+	return nil
 }
 func (me *CSFile) CanDeleteDirectory(ctx context.Context, fi *dokan.FileInfo) error {
+	log.Println("CanDeleteDirectory is called.")
 	return dokan.ErrAccessDenied
 }
 func (me *CSFile) SetEndOfFile(ctx context.Context, fi *dokan.FileInfo, length int64) error {
 	log.Println("emptyFile.SetEndOfFile")
+	if me.fibk == nil {
+		log.Printf("SetEndOfFile returns ErrAccessDenied")
+		return dokan.ErrAccessDenied
+	}
+	ok := me.fibk.Truncate(uint64(length))
+	if ok != 0 {
+		log.Printf("SetEndOfFile returns ErrAccessDenied")
+		return dokan.ErrAccessDenied
+	}
 	return nil
 }
 func (me *CSFile) SetAllocationSize(ctx context.Context, fi *dokan.FileInfo, length int64) error {
 	log.Println("emptyFile.SetAllocationSize")
+
 	return nil
 }
 func (me *CSFile) MoveFile(ctx context.Context, source *dokan.FileInfo, targetPath string, replaceExisting bool) error {
@@ -201,9 +225,10 @@ func (me *CSFile) MoveFile(ctx context.Context, source *dokan.FileInfo, targetPa
 }
 func (me *CSFile) ReadFile(ctx context.Context, fi *dokan.FileInfo, bs []byte, offset int64) (int, error) {
 	n := me.fibk.Read(bs, offset)
-	if n < 0 {
+	if n >= 0 {
 		return n, nil
 	} else {
+		log.Printf("ReadFile returns ErrAccessDenied")
 		return 0, dokan.ErrAccessDenied
 	}
 }

@@ -5,10 +5,10 @@ import (
 	"strings"
 	//"os"
 
-	"brightlib.com/common"
-	cfg "brightlib.com/config"
-	"brightlib.com/drivers/aliyun"
-	"brightlib.com/drivers/s3impl"
+	"github.com/allspace/csmgr/common"
+	"github.com/allspace/csmgr/drivers/aliyun"
+	"github.com/allspace/csmgr/drivers/s3impl"
+	cfg "github.com/allspace/csmgr/util"
 )
 
 func NewFileSystem(name string) (fscommon.FileSystemImpl, int) {

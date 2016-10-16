@@ -6,7 +6,7 @@ import (
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
-	"brightlib.com/common"
+	"github.com/allspace/csmgr/common"
 )
 
 type AliyunClientImpl struct {
@@ -48,13 +48,10 @@ func (me *AliyunClientImpl) Mount(bucketName string) (fscommon.FileSystemImpl, i
 	}
 	log.Println("Connected to bucket ", bucketName)
 	vol := &AliyunFSImpl{
-		client:        me.client,
-		bucket:        bucket,
-		bucketName:    bucketName,
-		dirCache:      fscommon.NewDirCache(),
-		notExistCache: fscommon.NewDirCache(),
-		fileMgr:       fscommon.NewFileInstanceMgr(),
+		client: me.client,
+		bucket: bucket,
 	}
+	vol.Init(bucketName)
 	return vol, 0
 }
 

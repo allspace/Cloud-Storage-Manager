@@ -5,9 +5,8 @@ import (
 	"flag"
 	"log"
 
-	cfg "brightlib.com/config"
-	"brightlib.com/fsvc"
-	//"brightlib.com/common"
+	"github.com/allspace/csmgr/fsvc"
+	cfg "github.com/allspace/csmgr/util"
 )
 
 func main() {
@@ -27,5 +26,6 @@ func main() {
 		log.Println("Failed to create file system instance.")
 		return
 	}
-	fsvc.FileSystemMainLoop(fs, flag.Arg(0))
+	//fsvc.FileSystemMainLoop(fs, flag.Arg(0))
+	fsvc.Http_MainLoop(fs)
 }

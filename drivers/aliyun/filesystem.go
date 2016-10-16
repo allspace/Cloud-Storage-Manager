@@ -1,53 +1,56 @@
 package aliyunimpl
 
 import (
-	//"os"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
-	"brightlib.com/common"
+	"github.com/allspace/csmgr/common"
 )
 
 type AliyunFSImpl struct {
+	fscommon.FSImplBase
 	client *oss.Client
 	bucket *oss.Bucket
-
-	bucketName    string
-	dirCache      *fscommon.DirCache
-	notExistCache *fscommon.DirCache //avoid flag files being checked too frequently
-	fileMgr       *fscommon.FileInstanceMgr
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 //Internal functions
 ///////////////////////////////////////////////////////////////////////////////
 
-func (me *AliyunFSImpl) addDirCache(key string, di fscommon.DirItem) {
+func (me *AliyunFSImpl) addDirCache(key string, di *fscommon.DirItem) {
 	if key[len(key)-1] == '/' {
 		key = key[:len(key)-1]
 	}
-	me.dirCache.Add(key, &di, fscommon.CACHE_LIFE_SHORT)
+	log.Println("Add dir cache: ", key)
+	me.DirCache.Add(key, di, fscommon.CACHE_LIFE_SHORT)
 }
 
 //get attributes for path/file
 //it can also be used to check if path/file exists
-func (me *AliyunFSImpl) _getAttrFromRemote(path string, iType int) (*fscommon.DirItem, int) {
+func (me *AliyunFSImpl) getAttrFromRemote(path string, iType int) (os.FileInfo, int) {
 	key := path
+	if len(path) != 0 && path[0] == '/' {
+		key = path[1:]
+	}
+
 	if iType == fscommon.S_IFDIR {
 		key = key + "/"
 	}
+	log.Printf("Get object detail for %s", key)
 	meta, err := me.bucket.GetObjectDetailedMeta(key)
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
 		// Message from an error.
 		if reqerr, ok := err.(oss.ServiceError); ok {
+			log.Printf("reqerr.StatusCode=%d", reqerr.StatusCode)
 			if reqerr.StatusCode == 404 {
 				if iType == fscommon.S_IFUNKOWN {
-					return me._getAttrFromRemote(key, fscommon.S_IFDIR)
+					return me.getAttrFromRemote(key, fscommon.S_IFDIR)
 				} else {
 					return nil, fscommon.ENOENT
 				}
@@ -66,18 +69,18 @@ func (me *AliyunFSImpl) _getAttrFromRemote(path string, iType int) (*fscommon.Di
 	}
 	const longForm = "Jan 2, 2006 at 3:04pm (MST)"
 
-	log.Println(path)
-	log.Println(meta["LastModified"])
+	//log.Println(path)
+	//log.Println(meta["LastModified"])
 
 	var mtime time.Time
 	if len(meta["LastModified"]) > 0 {
 		mtime, _ = time.Parse(longForm, meta["LastModified"][0])
 	}
 	return &fscommon.DirItem{
-		Name:  fscommon.GetLastPathComp(path),
-		Type:  iType,
-		Size:  uint64(size),
-		Mtime: mtime,
+		DiName:  fscommon.GetLastPathComp(path),
+		DiType:  iType,
+		DiSize:  size,
+		DiMtime: mtime,
 	}, 0
 }
 
@@ -85,11 +88,30 @@ func (me *AliyunFSImpl) _getAttrFromRemote(path string, iType int) (*fscommon.Di
 //Exported functions
 ///////////////////////////////////////////////////////////////////////////////
 
+func (me *AliyunFSImpl) GetAttr(path string) (os.FileInfo, int) {
+	log.Printf("GetAttr is called for %s", path)
+	if len(path) > 1 && path[0] == '/' {
+		path = path[1:]
+	}
+
+	di, ok := me.FSImplBase.GetAttr(path)
+	if di != nil || ok != 0 {
+		return di, ok
+	}
+
+	//get attributes from remote
+	di, ok = me.getAttrFromRemote(path, fscommon.S_IFUNKOWN)
+	if ok == fscommon.ENOENT {
+		me.NotExistCache.Add(path, &fscommon.DirItem{}, fscommon.CACHE_LIFE_SHORT)
+	}
+	return di, ok
+}
+
 func (me *AliyunFSImpl) OpenDir(path string) int {
 	return 0
 }
 
-func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem, int) {
+func (me *AliyunFSImpl) ReadDir(path string) ([]os.FileInfo, int) {
 
 	log.Println("AliyunFSImpl::ReadDir = ", path)
 
@@ -109,7 +131,7 @@ func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem, int) {
 
 	diCount := len(lsRes.CommonPrefixes) + len(lsRes.Objects)
 
-	dis := make([]fscommon.DirItem, diCount)
+	dis := make([]os.FileInfo, diCount)
 
 	//collect directories
 	for i := 0; i < len(lsRes.CommonPrefixes); i++ {
@@ -122,12 +144,13 @@ func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem, int) {
 			continue
 		}
 
-		dis[i].Name = fscommon.GetLastPathComp(key) //need remove slash suffix and common prefix (for subdir)
-		dis[i].Type = fscommon.S_IFDIR
-		dis[i].Size = 0
-
+		dis[i] = &fscommon.DirItem{
+			DiName: fscommon.GetLastPathComp(key), //need remove slash suffix and common prefix (for subdir)
+			DiType: fscommon.S_IFDIR,
+			DiSize: 0,
+		}
 		//add to cache
-		me.addDirCache(key, dis[i])
+		me.addDirCache(key, dis[i].(*fscommon.DirItem))
 	}
 
 	//collect files
@@ -138,64 +161,28 @@ func (me *AliyunFSImpl) ReadDir(path string) ([]fscommon.DirItem, int) {
 			continue
 		}
 
-		dis[j] = fscommon.DirItem{
-			Name:  fscommon.GetLastPathComp(key), //need remove common prefix
-			Size:  uint64(lsRes.Objects[i].Size),
-			Mtime: lsRes.Objects[i].LastModified,
+		dis[j] = &fscommon.DirItem{
+			DiName:  fscommon.GetLastPathComp(key), //need remove common prefix
+			DiSize:  lsRes.Objects[i].Size,
+			DiMtime: lsRes.Objects[i].LastModified,
 			//lsRes.Objects[i].ETag
-			Type: fscommon.S_IFREG,
+			DiType: fscommon.S_IFREG,
 		}
 
 		//add to cache
-		me.addDirCache(key, dis[j])
+		me.addDirCache(key, dis[j].(*fscommon.DirItem))
 		j++
 	}
 
 	log.Println("Directories and files: ", diCount)
-	return dis, diCount
-}
-
-func (me *AliyunFSImpl) GetAttr(path string) (*fscommon.DirItem, int) {
-	//return fixed info for root path
-	if path == "/" {
-		return &fscommon.DirItem{
-			Name:  "/",
-			Mtime: time.Now(),
-			Size:  0,
-			Type:  fscommon.S_IFDIR,
-		}, 0
-	}
-	if len(path) != 0 && path[0] == '/' {
-		path = path[1:]
-	}
-
-	//di,ok := me.fileMgr.GetFileInfo(path)
-	//if ok {
-	//	return di, 0
-	//}
-
-	di, ok := me.dirCache.Get(path)
-	if ok {
-		return di, 0
-	}
-
-	if me.notExistCache.Exist(path) {
-		return nil, fscommon.ENOENT
-	}
-
-	//get attributes from remote
-	di, rc := me._getAttrFromRemote(path, fscommon.S_IFUNKOWN)
-	if rc == fscommon.ENOENT {
-		me.notExistCache.Add(path, &fscommon.DirItem{}, fscommon.CACHE_LIFE_SHORT)
-	}
-	return di, rc
+	return []os.FileInfo(dis), diCount
 }
 
 func (me *AliyunFSImpl) NewFileImpl(path string) (fscommon.FileImpl, int) {
 	fio := &AliyunIO{
 		bucket:     me.bucket,
 		fs:         me,
-		bucketName: me.bucketName,
+		bucketName: me.BucketName,
 	}
 
 	rc := NewAliyunFile(fio)
@@ -210,7 +197,7 @@ func (me *AliyunFSImpl) Open(path string, flags uint32) (*fscommon.FileObject, i
 	//if successful, this will increase instance reference count
 	log.Println("Try to find existing object for file", path)
 
-	fo, ok := me.fileMgr.GetInstance(path)
+	fo, ok := me.FileMgr.GetInstance(path)
 	if ok == 0 {
 		log.Println("Found existing instance for file ", path)
 		return fo, 0
@@ -219,7 +206,7 @@ func (me *AliyunFSImpl) Open(path string, flags uint32) (*fscommon.FileObject, i
 	//var fileNotExist bool = false
 
 	//verify if the file exists, and if user has permission to open the file in selected mode
-	_, ok = me._getAttrFromRemote(path, fscommon.S_IFREG)
+	_, ok = me.getAttrFromRemote(path, fscommon.S_IFREG)
 	switch ok {
 	case fscommon.EIO:
 		return nil, ok
@@ -233,7 +220,7 @@ func (me *AliyunFSImpl) Open(path string, flags uint32) (*fscommon.FileObject, i
 	}
 
 	log.Println("Trying to allocate a file instance for file ", path)
-	fo, ok = me.fileMgr.Allocate(me, path)
+	fo, ok = me.FileMgr.Allocate(me, path)
 	if ok != 0 {
 		return nil, ok
 	}
@@ -261,15 +248,6 @@ func (me *AliyunFSImpl) Chmod(name string, mode uint32) int {
 
 func (me *AliyunFSImpl) Utimens(name string, Mtime *time.Time) int {
 	return 0
-}
-
-func (me *AliyunFSImpl) StatFs(name string) (*fscommon.FsInfo, int) {
-	return &fscommon.FsInfo{
-		Blocks: 1024 * 1024 * 1024,
-		Bfree:  1024 * 1024 * 1024,
-		Bavail: 1024 * 1024 * 1024,
-		Bsize:  1024 * 128,
-	}, 0
 }
 
 func (me *AliyunFSImpl) Mkdir(path string, mode uint32) int {
@@ -306,8 +284,13 @@ func (me *AliyunFSImpl) Unlink(path string) int {
 	}
 
 	//if the file is being open, return status busy
-	if me.fileMgr.Exist(path) {
+	if me.FileMgr.Exist(path) {
 		return fscommon.EBUSY
+	}
+
+	//no leading slash for aliyun
+	if len(path) > 0 && path[0] == '/' {
+		path = path[1:]
 	}
 
 	err := me.bucket.DeleteObject(path)

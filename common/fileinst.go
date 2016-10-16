@@ -2,6 +2,7 @@ package fscommon
 
 import (
 	"log"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -34,7 +35,7 @@ func NewFileInstanceMgr() *FileInstanceMgr {
 	}
 }
 
-func (me *FileInstanceMgr) GetFileInfo(name string) (*DirItem, bool) {
+func (me *FileInstanceMgr) GetFileInfo(name string) (os.FileInfo, bool) {
 	me.mtx.Lock()
 	defer me.mtx.Unlock()
 
@@ -190,6 +191,7 @@ func (me *FileObject) Release() {
 
 func (me *FileObject) Read(data []byte, offset int64) int {
 	if me.fileInst == nil {
+		log.Println("Invalid file instance handle.")
 		return -1
 	}
 	return me.fileInst.file.Read(data, offset)
@@ -232,4 +234,11 @@ func (me *FileObject) Truncate(size uint64) int {
 		return -1
 	}
 	return me.fileInst.file.Truncate(size)
+}
+
+func (me *FileObject) GetLength() int64 {
+	if me.fileInst == nil {
+		return -1
+	}
+	return me.fileInst.file.GetInfo().Size()
 }
